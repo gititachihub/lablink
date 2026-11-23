@@ -2,6 +2,7 @@
 
 import { useActionState } from 'react';
 import { submitBookingAction } from '@/actions/booking.actions';
+import { Button } from '@/components/ui/button';
 import type { Equipment } from '@/domain/types';
 
 export function BookingRequestForm({
@@ -16,26 +17,26 @@ export function BookingRequestForm({
   return (
     <form action={formAction} className="space-y-4">
       {state?.error && (
-        <div role="alert" className="p-3 rounded-lg bg-rose-950/80 border border-rose-800 text-rose-300 text-xs font-medium">
+        <div role="alert" className="p-3 rounded-lg bg-[#2D1111] border border-[#F87171]/40 text-[#F87171] text-xs font-semibold">
           {state.error}
         </div>
       )}
       {state?.success && (
-        <div role="status" className="p-3 rounded-lg bg-emerald-950/80 border border-emerald-800 text-emerald-300 text-xs font-medium">
-          ✓ Booking request submitted successfully! Pending faculty review.
+        <div role="status" className="p-3 rounded-lg bg-[#0E2916] border border-[#4ADE80]/40 text-[#4ADE80] text-xs font-semibold">
+          ✓ Booking request submitted successfully! Awaiting faculty review in queue.
         </div>
       )}
 
-      <div>
-        <label htmlFor="equipmentId" className="block text-xs font-semibold text-zinc-300 mb-1">
-          Select Equipment
+      <div className="space-y-1.5">
+        <label htmlFor="equipmentId" className="block text-xs font-semibold text-[#F5F5F5]">
+          Selected Research Instrument
         </label>
         <select
           id="equipmentId"
           name="equipmentId"
           required
           defaultValue={preselectedEquipmentId || ''}
-          className="w-full bg-zinc-950 border border-zinc-700 rounded-lg px-3.5 py-2 text-sm text-white focus-visible:border-yellow-400"
+          className="w-full bg-[#050505] border border-[#26262B] rounded-lg px-3.5 py-2 text-sm text-[#F5F5F5] focus:border-[#FFD60A] focus:outline-none"
         >
           <option value="" disabled>Choose equipment...</option>
           {equipmentList.map((eq) => (
@@ -45,43 +46,42 @@ export function BookingRequestForm({
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        <div>
-          <label htmlFor="startTime" className="block text-xs font-semibold text-zinc-300 mb-1">
-            Slot Start Time (UTC / ISO)
+        <div className="space-y-1.5">
+          <label htmlFor="startTime" className="block text-xs font-semibold text-[#F5F5F5]">
+            Slot Start — Campus time (IST)
           </label>
           <input
             id="startTime"
             name="startTime"
             type="datetime-local"
             required
-            className="w-full bg-zinc-950 border border-zinc-700 rounded-lg px-3.5 py-2 text-sm text-white focus-visible:border-yellow-400"
+            className="w-full bg-[#050505] border border-[#26262B] rounded-lg px-3.5 py-2 text-sm text-[#F5F5F5] focus:border-[#FFD60A] focus:outline-none"
             onChange={(e) => {
-              // Convert local input to ISO
               const date = new Date(e.target.value);
               if (!isNaN(date.getTime())) {
-                const hiddenInput = document.getElementById('startTimeHidden') as HTMLInputElement;
-                if (hiddenInput) hiddenInput.value = date.toISOString();
+                const hidden = document.getElementById('startTimeHidden') as HTMLInputElement;
+                if (hidden) hidden.value = date.toISOString();
               }
             }}
           />
           <input type="hidden" id="startTimeHidden" name="startTime" />
         </div>
 
-        <div>
-          <label htmlFor="endTime" className="block text-xs font-semibold text-zinc-300 mb-1">
-            Slot End Time (UTC / ISO)
+        <div className="space-y-1.5">
+          <label htmlFor="endTime" className="block text-xs font-semibold text-[#F5F5F5]">
+            Slot End — Campus time (IST)
           </label>
           <input
             id="endTime"
             name="endTime"
             type="datetime-local"
             required
-            className="w-full bg-zinc-950 border border-zinc-700 rounded-lg px-3.5 py-2 text-sm text-white focus-visible:border-yellow-400"
+            className="w-full bg-[#050505] border border-[#26262B] rounded-lg px-3.5 py-2 text-sm text-[#F5F5F5] focus:border-[#FFD60A] focus:outline-none"
             onChange={(e) => {
               const date = new Date(e.target.value);
               if (!isNaN(date.getTime())) {
-                const hiddenInput = document.getElementById('endTimeHidden') as HTMLInputElement;
-                if (hiddenInput) hiddenInput.value = date.toISOString();
+                const hidden = document.getElementById('endTimeHidden') as HTMLInputElement;
+                if (hidden) hidden.value = date.toISOString();
               }
             }}
           />
@@ -89,9 +89,9 @@ export function BookingRequestForm({
         </div>
       </div>
 
-      <div>
-        <label htmlFor="projectTitle" className="block text-xs font-semibold text-zinc-300 mb-1">
-          Project / Experiment Title
+      <div className="space-y-1.5">
+        <label htmlFor="projectTitle" className="block text-xs font-semibold text-[#F5F5F5]">
+          Experiment / Research Project Title
         </label>
         <input
           id="projectTitle"
@@ -99,54 +99,50 @@ export function BookingRequestForm({
           type="text"
           required
           placeholder="e.g. Thin-film Epitaxial Layer XRD Analysis"
-          className="w-full bg-zinc-950 border border-zinc-700 rounded-lg px-3.5 py-2 text-sm text-white placeholder-zinc-500 focus-visible:border-yellow-400"
+          className="w-full bg-[#050505] border border-[#26262B] rounded-lg px-3.5 py-2 text-sm text-[#F5F5F5] placeholder-[#71717A] focus:border-[#FFD60A] focus:outline-none"
         />
       </div>
 
-      <div>
-        <label htmlFor="projectDescription" className="block text-xs font-semibold text-zinc-300 mb-1">
-          Experiment Description & Objectives
+      <div className="space-y-1.5">
+        <label htmlFor="projectDescription" className="block text-xs font-semibold text-[#F5F5F5]">
+          Project Objectives & Method Description
         </label>
         <textarea
           id="projectDescription"
           name="projectDescription"
           required
           rows={3}
-          placeholder="Describe your research objective and sample preparation status..."
-          className="w-full bg-zinc-950 border border-zinc-700 rounded-lg px-3.5 py-2 text-sm text-white placeholder-zinc-500 focus-visible:border-yellow-400"
+          placeholder="Detail research scope, sample status, and justification..."
+          className="w-full bg-[#050505] border border-[#26262B] rounded-lg px-3.5 py-2 text-sm text-[#F5F5F5] placeholder-[#71717A] focus:border-[#FFD60A] focus:outline-none"
         />
       </div>
 
-      <div>
-        <label htmlFor="deadline" className="block text-xs font-semibold text-zinc-300 mb-1">
-          Project Deadline
+      <div className="space-y-1.5">
+        <label htmlFor="deadline" className="block text-xs font-semibold text-[#F5F5F5]">
+          Project Hard Deadline
         </label>
         <input
           id="deadline"
           name="deadline"
           type="date"
           required
-          className="w-full bg-zinc-950 border border-zinc-700 rounded-lg px-3.5 py-2 text-sm text-white focus-visible:border-yellow-400"
+          className="w-full bg-[#050505] border border-[#26262B] rounded-lg px-3.5 py-2 text-sm text-[#F5F5F5] focus:border-[#FFD60A] focus:outline-none"
           onChange={(e) => {
             const date = new Date(e.target.value);
             if (!isNaN(date.getTime())) {
-              const hiddenInput = document.getElementById('deadlineHidden') as HTMLInputElement;
-              if (hiddenInput) hiddenInput.value = date.toISOString();
+              const hidden = document.getElementById('deadlineHidden') as HTMLInputElement;
+              if (hidden) hidden.value = date.toISOString();
             }
           }}
         />
         <input type="hidden" id="deadlineHidden" name="deadline" />
       </div>
 
-      <div className="flex items-center justify-between pt-2">
-        <span className="text-xs text-zinc-500">Max 3 active pending requests per student.</span>
-        <button
-          type="submit"
-          disabled={isPending}
-          className="px-6 py-2.5 bg-yellow-400 hover:bg-yellow-300 text-black font-bold rounded-lg text-sm transition-colors cursor-pointer disabled:opacity-50 shadow-sm"
-        >
+      <div className="flex items-center justify-between pt-3 border-t border-[#26262B]">
+        <span className="text-xs text-[#A1A1AA]">Max 3 active pending requests per student.</span>
+        <Button type="submit" variant="primary" size="md" disabled={isPending}>
           {isPending ? 'Submitting...' : 'Submit Request'}
-        </button>
+        </Button>
       </div>
     </form>
   );

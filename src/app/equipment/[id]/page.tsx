@@ -1,112 +1,140 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { getEquipmentById, getEquipmentBusyRanges } from '@/queries/equipment.queries';
+import { getCurrentProfile } from '@/queries/profile.queries';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { Card } from '@/components/ui/card';
+import { Table } from '@/components/ui/table';
 
 export default async function EquipmentDetailPage(props: {
   params: Promise<{ id: string }>;
 }) {
   const params = await props.params;
-  const equipment = await getEquipmentById(params.id);
+  const equipment = await getEquipmentById(params.id).catch(() => null);
 
   if (!equipment) {
     notFound();
   }
 
-  // Fetch busy slots for the next 7 days
+  const profile = await getCurrentProfile().catch(() => null);
+
+  // Fetch 7-day busy schedule
   const now = new Date();
   const nextWeek = new Date(now.getTime() + 7 * 86400000);
   const busyRanges = await getEquipmentBusyRanges(
     equipment.id,
     now.toISOString(),
     nextWeek.toISOString()
-  );
+  ).catch(() => []);
+
+  const bookingHref = profile
+    ? `/dashboard/requests/new?equipment=${equipment.id}`
+    : `/login?redirect=/dashboard/requests/new?equipment=${equipment.id}`;
 
   return (
     <div className="max-w-4xl mx-auto space-y-8">
-      <div className="flex items-center gap-2 text-xs text-zinc-500">
-        <Link href="/" className="hover:text-yellow-400">Catalogue</Link>
+      {/* Breadcrumb */}
+      <nav aria-label="Breadcrumb" className="flex items-center gap-2 text-xs text-[#A1A1AA]">
+        <Link href="/" className="hover:text-[#FFD60A]">Home</Link>
         <span>/</span>
-        <span className="text-zinc-300 font-medium">{equipment.name}</span>
-      </div>
+        <Link href="/equipment" className="hover:text-[#FFD60A]">Equipment</Link>
+        <span>/</span>
+        <span className="text-[#F5F5F5] font-semibold">{equipment.name}</span>
+      </nav>
 
-      <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-6 sm:p-8 space-y-6">
-        <div className="flex flex-col sm:flex-row justify-between items-start gap-4 pb-6 border-b border-zinc-800">
-          <div>
-            <div className="flex items-center gap-2 mb-2">
-              <span className="text-xs px-2.5 py-0.5 rounded-full bg-zinc-800 text-zinc-300 border border-zinc-700 font-medium">
+      {/* Main Details Card */}
+      <Card className="space-y-6">
+        <div className="flex flex-col sm:flex-row justify-between items-start gap-4 pb-6 border-b border-[#26262B]">
+          <div className="space-y-2">
+            <div className="flex items-center gap-2">
+              <span className="text-xs px-2.5 py-0.5 rounded-full bg-[#17171A] text-[#A1A1AA] border border-[#26262B] font-mono">
                 {equipment.category}
               </span>
-              <span className={`text-xs px-2 py-0.5 rounded font-semibold ${
-                equipment.isOperational ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' : 'bg-rose-950 text-rose-400 border border-rose-800'
-              }`}>
-                {equipment.isOperational ? 'Operational' : 'Under Maintenance'}
-              </span>
+              <Badge status={equipment.isOperational ? 'operational' : 'maintenance'} />
             </div>
-            <h1 className="text-2xl sm:text-3xl font-extrabold text-white">{equipment.name}</h1>
+            <h1 className="text-2xl sm:text-3xl font-extrabold text-[#F5F5F5]">{equipment.name}</h1>
           </div>
 
-          <Link
-            href={`/dashboard/bookings?equipmentId=${equipment.id}`}
-            className="w-full sm:w-auto px-6 py-2.5 bg-yellow-400 hover:bg-yellow-300 text-black font-bold rounded-lg text-sm transition-colors text-center shadow-sm"
-          >
-            Submit Booking Request
+          <Link href={bookingHref} className="w-full sm:w-auto">
+            <Button variant="primary" size="md" className="w-full">
+              Request this equipment →
+            </Button>
           </Link>
         </div>
 
-        <div className="space-y-4">
-          <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider">Overview</h2>
-          <p className="text-zinc-300 text-sm leading-relaxed">{equipment.description}</p>
+        {/* Description */}
+        <div className="space-y-2">
+          <h2 className="text-xs font-semibold text-[#A1A1AA] uppercase tracking-wider">Overview</h2>
+          <p className="text-sm text-[#F5F5F5] leading-relaxed">{equipment.description}</p>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-4 border-t border-zinc-800">
-          <div className="bg-zinc-950 p-4 rounded-xl border border-zinc-800">
-            <span className="text-xs text-zinc-500 block">Daily Hours</span>
-            <span className="text-sm font-mono text-zinc-200 font-semibold">{equipment.labOpen} - {equipment.labClose} IST</span>
+        {/* Quick parameters */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-4 border-t border-[#26262B]">
+          <div className="bg-[#17171A] p-4 rounded-xl border border-[#26262B]">
+            <span className="text-xs text-[#A1A1AA] block">Campus Operating Hours</span>
+            <span className="text-sm font-mono text-[#F5F5F5] font-bold">{equipment.labOpen} - {equipment.labClose} IST</span>
           </div>
-          <div className="bg-zinc-950 p-4 rounded-xl border border-zinc-800">
-            <span className="text-xs text-zinc-500 block">Max Slot Duration</span>
-            <span className="text-sm font-mono text-zinc-200 font-semibold">{equipment.maxBookingHours} Hours</span>
+          <div className="bg-[#17171A] p-4 rounded-xl border border-[#26262B]">
+            <span className="text-xs text-[#A1A1AA] block">Max Slot Duration</span>
+            <span className="text-sm font-mono text-[#F5F5F5] font-bold">{equipment.maxBookingHours} Hours</span>
           </div>
-          <div className="bg-zinc-950 p-4 rounded-xl border border-zinc-800">
-            <span className="text-xs text-zinc-500 block">Access Prerequisite</span>
-            <span className={`text-sm font-semibold ${equipment.requiresTraining ? 'text-amber-400' : 'text-zinc-300'}`}>
-              {equipment.requiresTraining ? 'Training Certification' : 'Open Access'}
+          <div className="bg-[#17171A] p-4 rounded-xl border border-[#26262B]">
+            <span className="text-xs text-[#A1A1AA] block">Access Requirement</span>
+            <span className={`text-sm font-bold ${equipment.requiresTraining ? 'text-[#FBBF24]' : 'text-[#4ADE80]'}`}>
+              {equipment.requiresTraining ? 'Training Required' : 'Open Access'}
             </span>
           </div>
         </div>
 
+        {/* Technical Specifications Table */}
         {equipment.specifications && Object.keys(equipment.specifications).length > 0 && (
-          <div className="space-y-3 pt-4 border-t border-zinc-800">
-            <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider">Technical Specifications</h2>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+          <div className="space-y-3 pt-4 border-t border-[#26262B]">
+            <h2 className="text-xs font-semibold text-[#A1A1AA] uppercase tracking-wider">Technical Specifications</h2>
+            <Table caption="Instrument Technical Specifications" headers={['Parameter', 'Value']}>
               {Object.entries(equipment.specifications).map(([key, val]) => (
-                <div key={key} className="flex justify-between p-2.5 rounded bg-zinc-950/60 border border-zinc-800/80">
-                  <span className="text-zinc-400 capitalize">{key}:</span>
-                  <span className="text-zinc-200 font-mono font-medium">{String(val)}</span>
-                </div>
+                <tr key={key} className="hover:bg-[#17171A]/50">
+                  <td className="px-4 py-2.5 font-medium text-[#A1A1AA] capitalize">{key}</td>
+                  <td className="px-4 py-2.5 font-mono text-[#F5F5F5]">{String(val)}</td>
+                </tr>
               ))}
-            </div>
+            </Table>
           </div>
         )}
 
-        <div className="space-y-3 pt-4 border-t border-zinc-800">
-          <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider">Anonymized Schedule Availability (Next 7 Days)</h2>
+        {/* 7-Day Availability Timeline (Not colour-only: visual bars + explicit text list) */}
+        <div className="space-y-4 pt-4 border-t border-[#26262B]">
+          <div className="flex items-center justify-between">
+            <h2 className="text-xs font-semibold text-[#A1A1AA] uppercase tracking-wider">
+              7-Day Availability Schedule (Asia/Kolkata)
+            </h2>
+            <span className="text-[11px] text-[#A1A1AA]">Exclusion-safe bookings only</span>
+          </div>
+
           {busyRanges.length === 0 ? (
-            <p className="text-xs text-emerald-400 bg-emerald-950/20 p-3 rounded-lg border border-emerald-900/40">
-              ✓ All standard hours are currently open this week.
-            </p>
+            <div className="p-4 rounded-xl bg-[#0E2916]/30 border border-[#4ADE80]/30 text-xs text-[#4ADE80] flex items-center gap-2">
+              <span aria-hidden="true">✓</span>
+              <span>All scheduled daily operational hours are currently free over the next 7 days.</span>
+            </div>
           ) : (
-            <ul className="space-y-1.5 text-xs font-mono text-zinc-400">
-              {busyRanges.map((range, idx) => (
-                <li key={idx} className="bg-zinc-950 p-2.5 rounded border border-zinc-800 flex justify-between">
-                  <span className="text-rose-400">Reserved Slot</span>
-                  <span>{range}</span>
-                </li>
-              ))}
-            </ul>
+            <div className="space-y-3">
+              <div className="space-y-2">
+                <span className="text-xs text-[#A1A1AA] block">Confirmed Reserved Intervals (Explicit Text List):</span>
+                <ul className="space-y-1.5 text-xs font-mono">
+                  {busyRanges.map((range, idx) => (
+                    <li key={idx} className="bg-[#17171A] p-2.5 rounded-lg border border-[#26262B] flex justify-between items-center">
+                      <span className="text-[#F87171] font-bold flex items-center gap-1.5">
+                        <span aria-hidden="true">■</span> Busy Slot #{idx + 1}
+                      </span>
+                      <span className="text-[#F5F5F5]">{range}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </div>
           )}
         </div>
-      </div>
+      </Card>
     </div>
   );
 }

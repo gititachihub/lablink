@@ -1,32 +1,92 @@
 @import "tailwindcss";
 
 :root {
-  --background: #09090b;
-  --foreground: #fafafa;
-  --accent: #facc15;
-  --accent-hover: #eab308;
-  --card: #18181b;
-  --border: #27272a;
+  --background: #050505;
+  --surface: #0F0F10;
+  --raised: #17171A;
+  --border: #26262B;
+  --text: #F5F5F5;
+  --muted: #A1A1AA;
+  --accent: #FFD60A;
+  --accent-text: #0A0A0A;
+  --success: #4ADE80;
+  --danger: #F87171;
+  --warning: #FBBF24;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+  background-color: var(--background);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  letter-spacing: -0.01em;
+  min-height: 100vh;
   margin: 0;
   padding: 0;
-  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
 }
 
+/* Confident headings */
+h1, h2, h3, h4, h5, h6 {
+  letter-spacing: -0.03em;
+  font-weight: 700;
+}
+
+/* Subtle yellow glow & universal accessible focus ring */
 :focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+  box-shadow: 0 0 12px rgba(255, 214, 10, 0.35);
 }
 
+/* CSS Animations */
+@keyframes fadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes pulseSubtle {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+@keyframes scoreFill {
+  from { width: 0%; }
+}
+
+.animate-fade-up {
+  animation: fadeUp 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-skeleton {
+  animation: pulseSubtle 1.8s ease-in-out infinite;
+}
+
+.animate-score-bar {
+  animation: scoreFill 0.7s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* Card hover lift */
+.card-hover {
+  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.card-hover:hover {
+  transform: translateY(-2px);
+  border-color: rgba(255, 214, 10, 0.4);
+  box-shadow: 0 8px 24px -4px rgba(0, 0, 0, 0.6), 0 0 12px -2px rgba(255, 214, 10, 0.15);
+}
+
+/* Prefers-reduced-motion guard */
 @media (prefers-reduced-motion: reduce) {
-  * {
-    animation-duration: 0.01ms !important;
+  *, ::before, ::after {
+    animation-duration: 0.001ms !important;
     animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
+    transition-duration: 0.001ms !important;
+    transform: none !important;
   }
 }
