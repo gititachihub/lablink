@@ -81,7 +81,7 @@ src/
 │   ├── ratelimit.server.ts     #   import 'server-only'; Per-user sliding-window rate limiter
 │   ├── catalogue-matcher.server.ts # Exact & fuzzy matching from string to real equipment UUID
 │   ├── validators.ts           #   Shared Zod schemas (re-exported from domain)
-│   ├── constants.ts            #   Campus timezone, max pending cap, weights, lab hours
+│   ├── constants.ts            #   CAMPUS_TIMEZONE = 'Asia/Kolkata', MAX_PENDING_REQUESTS_PER_STUDENT = 3, scoring weights
 │   └── utils.ts                #   cn() helper, formatters
 │
 └── seed/                       # Local seed scripts (uses SERVICE_ROLE_KEY, never deployed to Vercel)
@@ -524,10 +524,92 @@ REVOKE EXECUTE ON FUNCTION public.get_equipment_busy_ranges FROM anon;
 GRANT EXECUTE ON FUNCTION public.get_equipment_busy_ranges TO authenticated;
 ```
 
-### 5. Atomic State Transition RPCs (Approve / Reject / Cancel)
-Executes status change, booking insertion/deletion, and audit logging in a single transaction with SQLSTATE `23P01` error handling:
+### 5. Atomic State Transition RPCs (Submit / Approve / Reject / Cancel)
+Executes status change, booking insertion/deletion, and audit logging in a single transaction with SQLSTATE `23P01` error handling and database-level pending request cap enforcement:
 
 ```sql
+CREATE OR REPLACE FUNCTION public.submit_booking_request(
+  p_equipment_id UUID,
+  p_time_range TSTZRANGE,
+  p_project_title TEXT,
+  p_project_description TEXT,
+  p_deadline TIMESTAMPTZ,
+  p_ai_parsed_fields JSONB DEFAULT NULL
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_pending_count INT;
+  v_new_id UUID;
+  c_max_pending CONSTANT INT := 3; -- Enforces MAX_PENDING_REQUESTS_PER_STUDENT at DB level
+BEGIN
+  -- 1. Verify student role
+  IF public.get_my_role() <> 'student' THEN
+    RAISE EXCEPTION 'Only students may submit booking requests';
+  END IF;
+
+  -- 2. Enforce cap on pending requests per student inside the database function
+  SELECT count(*) INTO v_pending_count
+  FROM booking_requests
+  WHERE student_id = (SELECT auth.uid()) AND status = 'pending';
+
+  IF v_pending_count >= c_max_pending THEN
+    RAISE EXCEPTION 'Pending request limit reached: maximum % active pending requests allowed per student', c_max_pending;
+  END IF;
+
+  -- 3. Atomic insert with forced pending status and null review/score fields
+  INSERT INTO booking_requests (
+    student_id,
+    equipment_id,
+    time_range,
+    project_title,
+    project_description,
+    deadline,
+    deadline_verified,
+    status,
+    ai_parsed_fields,
+    reviewed_by,
+    review_note,
+    allocation_score,
+    allocation_explanation,
+    alternative_slots
+  )
+  VALUES (
+    (SELECT auth.uid()),
+    p_equipment_id,
+    p_time_range,
+    p_project_title,
+    p_project_description,
+    p_deadline,
+    false,
+    'pending',
+    p_ai_parsed_fields,
+    NULL,
+    NULL,
+    NULL,
+    NULL,
+    NULL
+  )
+  RETURNING id INTO v_new_id;
+
+  -- 4. Audit log
+  INSERT INTO audit_log (actor_id, action, table_name, record_id, old_data, new_data)
+  VALUES (
+    (SELECT auth.uid()),
+    'request.created',
+    'booking_requests',
+    v_new_id,
+    NULL,
+    jsonb_build_object('equipment_id', p_equipment_id, 'time_range', p_time_range, 'deadline', p_deadline)
+  );
+
+  RETURN jsonb_build_object('success', true, 'request_id', v_new_id);
+END;
+$$;
+
 CREATE OR REPLACE FUNCTION public.review_booking_request(
   p_request_id UUID,
   p_action TEXT, -- 'approved' or 'rejected'
@@ -655,6 +737,9 @@ END;
 $$;
 
 -- Security grant management: Revoke from anon, allow authenticated
+REVOKE EXECUTE ON FUNCTION public.submit_booking_request FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.submit_booking_request TO authenticated;
+
 REVOKE EXECUTE ON FUNCTION public.review_booking_request FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.review_booking_request TO authenticated;
 
