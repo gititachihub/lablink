@@ -451,25 +451,10 @@ CREATE POLICY br_select ON booking_requests FOR SELECT
     public.get_my_role() = 'admin'
   );
 
--- Students can insert: MUST be pending, no scores/explanations/reviews prefilled
-CREATE POLICY br_insert_student ON booking_requests FOR INSERT
+-- Direct client INSERT revoked completely; all requests MUST be created via submit_booking_request RPC
+CREATE POLICY br_no_client_insert ON booking_requests FOR INSERT
   TO authenticated
-  WITH CHECK (
-    public.get_my_role() = 'student' AND
-    student_id = (SELECT auth.uid()) AND
-    status = 'pending' AND
-    reviewed_by IS NULL AND
-    review_note IS NULL AND
-    allocation_score IS NULL AND
-    allocation_explanation IS NULL AND
-    alternative_slots IS NULL AND
-    deadline_verified = false AND
-    -- Cap on active pending requests: maximum 3 per student
-    (
-      SELECT count(*) FROM booking_requests
-      WHERE student_id = (SELECT auth.uid()) AND status = 'pending'
-    ) < 3
-  );
+  WITH CHECK (false);
 
 -- Direct UPDATE revoked for students; updates occur via RPC functions
 CREATE POLICY br_update_faculty_admin ON booking_requests FOR UPDATE
@@ -551,7 +536,10 @@ BEGIN
     RAISE EXCEPTION 'Only students may submit booking requests';
   END IF;
 
-  -- 2. Enforce cap on pending requests per student inside the database function
+  -- 2. Take per-student advisory transaction lock BEFORE counting to prevent race conditions
+  PERFORM pg_advisory_xact_lock(hashtext((SELECT auth.uid())::text));
+
+  -- 3. Enforce cap on pending requests per student inside the database function
   SELECT count(*) INTO v_pending_count
   FROM booking_requests
   WHERE student_id = (SELECT auth.uid()) AND status = 'pending';
@@ -560,7 +548,7 @@ BEGIN
     RAISE EXCEPTION 'Pending request limit reached: maximum % active pending requests allowed per student', c_max_pending;
   END IF;
 
-  -- 3. Atomic insert with forced pending status and null review/score fields
+  -- 4. Atomic insert with forced pending status and null review/score fields
   INSERT INTO booking_requests (
     student_id,
     equipment_id,
@@ -778,6 +766,7 @@ export interface UserQualification {
 | H4 | `withinLabHours` | Time span is within equipment `lab_open` and `lab_close` in campus time |
 | H5 | `fitsMaxDuration` | Duration hours `<= equipment.max_booking_hours` |
 | H6 | `feasibleBeforeDeadline` | Requested slot start time `< request.deadline` |
+| H7 | `categoryAndSpecMatch` | Equipment category matches requested category, and all requested technical specifications are satisfied by `equipment.specifications`. Also used by `findAlternativeEquipment` to discover matching gear in other departments. |
 
 ### Weighted Soft Score Formula
 
@@ -793,7 +782,7 @@ Score values are strictly in `[0, 1]`.
 finalScore = (0.35 * urgency) + (0.35 * waitTime) + (0.30 * pastFairness)
 ```
 
-> **Equipment Fit:** Replaced arbitrary keyword matching with deterministic catalogue category filtering upfront. All requests entering scoring are 100% matched to equipment capabilities.
+> **Equipment Fit & Alternative Discovery:** Replaced arbitrary keyword matching with deterministic category and specification matching (H7). When target equipment is unavailable or non-operational, `findAlternativeEquipment()` scans equipment across all campus departments, filters by H7, and returns matching equipment with their earliest free feasible slots.
 
 ### Multi-Request Conflict Ranking: `rankCompetingRequests`
 When multiple pending requests compete for overlapping slots on the same equipment:
@@ -1098,23 +1087,24 @@ Compliant with **WCAG 2.1 Level AA**:
 
 ---
 
-## 14. Architecture Change Log
+## 14. Architecture Self-Audit Log
 
-| Item # | Area | Section Touched | Summary of Specific Change |
-|---|---|---|---|
-| 1 | Security | § 2, § 4 | Forced `status='pending'` and null values on `booking_requests` INSERT; revoked direct student UPDATE. |
-| 2 | Security | § 2, § 4 | Profiles restricted to authenticated SELECT; updates limited strictly to `full_name` via DB trigger. |
-| 3 | Security | § 11 | Removed `admin@lablink.demo` and public admin passwords. Demo accounts are student and faculty only. |
-| 4 | Security | § 1, § 4 | Removed webhook route; implemented DB trigger `handle_new_user()` on `auth.users` forcing `role='student'`. |
-| 5 | Security | § 4 | Created `review_booking_request` and `cancel_booking_request` as `SECURITY DEFINER` RPCs handling SQLSTATE `23P01`. Service-role key removed from deployed app. |
-| 6 | Security | § 2, § 4 | Added `chk_bounded_request_range` and `chk_bounded_booking_range`. Revoked UPDATE/DELETE on `audit_log`. Adopted `(SELECT auth.uid())` pattern. Dropped `ip_address`. |
-| 7 | Functionality | § 1, § 5 | Implemented pure domain `rankCompetingRequests` with dynamic view-time scoring and deterministic tie-breaking. |
-| 8 | Functionality | § 2, § 5 | Created `user_qualifications` table enabling verification of hard constraint H3 (`accessEligible`). |
-| 9 | Functionality | § 4 | Implemented `get_equipment_busy_ranges` RPC returning anonymised time ranges. Blocked students reading other bookings. |
-| 10 | Functionality | § 2, § 5 | Added `deadline_verified`, max 3 pending requests per student cap, "claimed deadline" explanations, and deterministic spec filtering. |
-| 11 | Functionality | § 1, § 6 | Gemini prompt injects current date and campus timezone; JSON mode with Zod bounds; server-side ID matching; rate-limited. |
-| 12 | Functionality | § 6, § 8 | Replaced deprecated `@google/generative-ai` with official `@google/genai` SDK using `gemini-2.5-flash`. |
-| 13 | Pitch Flow | § 12 | Rewrote 90-second pitch with 2 competing requests for the same slot, showing exact mathematical score breakdowns. |
-| 14 | Structure | § 1, § 6 | Added `src/queries/` layer for Server Component reads; isolated Gemini client with `import 'server-only'`. |
-| 15 | Dependencies/Tests| § 8, § 9 | Complete dependency manifest; Vitest scenario test replaces Playwright; removed Temporal mention; pure CI tests. |
-| 16 | Risks/Dates | § 11, § 13 | Seed data uses relative intervals; documented Supabase 7-day inactivity pause; marked 15 RPM and 10s limits as "verify in docs". |
+| Item # | Area | Requirement Summary | Status | Section Touched | Audit Finding / Resolution |
+|---|---|---|---|---|---|
+| **1** | Security | `booking_requests`: INSERT policy forces `status='pending'` and null score/explanation/alternatives/reviewed_by. Remove student UPDATE; cancel, approve and reject via Postgres RPC only. | **Fixed now** | § 2, § 4 | Direct INSERT policy replaced by `br_no_client_insert` (`WITH CHECK (false)`). Submissions must call `submit_booking_request` RPC. Direct UPDATE revoked for students. |
+| **2** | Security | `profiles`: SELECT only for authenticated; limit exposed fields; update only `full_name` via trigger. Never department, role, email. | **Applied** | § 2, § 4 | Enforced via `profiles_select_authenticated` policy and `protect_profile_fields` BEFORE UPDATE trigger. |
+| **3** | Security | Remove `admin@lablink.demo` and public admin password. Demo accounts are student and faculty only. | **Applied** | § 11 | Demo accounts consist strictly of 3 faculty and 4 students. No admin demo user. |
+| **4** | Security | Auth trigger on `auth.users` hard-coding `role='student'` and ignoring user metadata. Webhook route removed. | **Applied** | § 1, § 4 | Webhook route deleted from structure; `handle_new_user()` trigger sets hardcoded `'student'`. |
+| **5** | Security | Approve/reject/cancel are `SECURITY DEFINER` with fixed `search_path`: verify role/dept, single transaction, handle SQLSTATE `23P01`. No service-role key in deployed app. Revoke EXECUTE from anon. | **Applied** | § 4, § 7 | Stored procedures `review_booking_request` and `cancel_booking_request` catch exclusion violations (`23P01`). Deployed app uses only anon/user sessions. EXECUTE revoked from anon. |
+| **6** | Security | CHECK constraints: bounded `time_range` (`upper > lower`). `audit_log`: revoke UPDATE/DELETE. Use `(SELECT auth.uid())`. Drop `ip_address`. | **Applied** | § 2, § 4 | Added `chk_bounded_request_range` and `chk_bounded_booking_range`. `audit_log` is immutable with UPDATE/DELETE/TRUNCATE revoked. `(SELECT auth.uid())` used across all policies. |
+| **7** | Functionality | `rankCompetingRequests(requests, ctx)`: group overlapping requests, rank by score, deterministic tie-break (submission time, then id). View-time score recomputation. | **Applied** | § 1, § 5 | Specified in `src/domain/allocation/ranking.ts` with injected clock and deterministic sorting. |
+| **8** | Functionality | `user_qualifications` table enabling evaluation of hard constraint H3 (`accessEligible`). | **Applied** | § 2, § 4, § 5 | Added table with foreign keys, index, and RLS. Evaluated in domain constraint H3. |
+| **9** | Functionality | Function returning busy time ranges only (anonymised). Students cannot read other bookings directly. | **Applied** | § 4 | `get_equipment_busy_ranges` RPC returns only `busy_range TSTZRANGE`. `bookings_select` policy restricts students to their own records. |
+| **10** | Functionality | `deadline_verified` flag, pending cap per student, "claimed deadline" in explanations. Deterministic category/spec matching (H7). | **Fixed now** | § 2, § 4, § 5 | `deadline_verified` column added; cap of 3 pending requests enforced with per-student advisory lock in `submit_booking_request` RPC; H7 added as hard constraint; category/spec matching powers cross-department `findAlternativeEquipment`. |
+| **11** | Functionality | Gemini: inject today's date & campus timezone, JSON mode with schema, server-side catalogue ID resolution, Zod max lengths, rate limit per user, untrusted prefill. | **Applied** | § 1, § 6 | Implemented in `src/lib/gemini.server.ts` with `responseSchema`, catalogue fuzzy/exact matcher, and 5 req/min rate limit. |
+| **12** | Functionality | Replace `@google/generative-ai` with official `@google/genai` SDK. | **Applied** | § 1, § 6, § 8 | Migrated to `@google/genai` with `GoogleGenAI` and `gemini-2.5-flash`. |
+| **13** | Pitch Flow | 90-second pitch flow: two competing requests for same slot, ranked with mathematical explanations, faculty approves winner, loser gets alternatives. | **Applied** | § 12 | Exact mathematical scoring breakdown: Arjun ($0.720$) vs. Meera ($0.270$). |
+| **14** | Structure | `queries/` layer for reads (Server Components); `actions/` for writes. Gemini in server-only module. | **Applied** | § 1, § 6 | Read/write layer split in folder architecture; Gemini guarded with `import 'server-only'`. |
+| **15** | Dependencies / Tests | Complete dependency manifest. Vitest scenario test replaces Playwright. Zero secrets in CI. Remove Temporal. | **Applied** | § 8, § 9 | Full dependency manifest in § 8; pure Vitest tests in CI; Temporal removed. |
+| **16** | Risks / Dates | Seed dates relative to current date. Supabase 7-day inactivity pause risk documented. 15 RPM and 10s timeout marked "verify in docs". | **Applied** | § 11, § 13 | Relative intervals in seed data; 7-day pause risk recorded; verification flags noted. |
+| **Cap/Timezone** | Configuration | `CAMPUS_TIMEZONE = 'Asia/Kolkata'` and `MAX_PENDING_REQUESTS_PER_STUDENT = 3` defined as named constants in `constants.ts`. | **Applied** | § 1, § 4, § 5 | Defined in `src/lib/constants.ts` and enforced in SQL / domain logic. |
