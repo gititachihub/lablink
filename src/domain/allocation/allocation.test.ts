@@ -19,7 +19,7 @@ import {
 } from './constraints';
 import { computeScore } from './scoring';
 import { buildExplanation } from './explain';
-import { findAlternatives, findAlternativeEquipment } from './alternatives';
+import { findAlternativeEquipment } from './alternatives';
 import { evaluateRequest } from './engine';
 import { rankCompetingRequests } from './ranking';
 import { SCORING_WEIGHTS, CAMPUS_TIMEZONE } from '@/lib/constants';
