@@ -33,6 +33,13 @@ export function NavigationBar({ profile }: { profile: UserProfile | null }) {
             >
               Equipment
             </Link>
+            <Link
+              href="/pitch"
+              className="text-[#FFD60A] hover:bg-[#17171A] px-3 py-1.5 rounded-lg transition-colors font-bold flex items-center gap-1.5"
+            >
+              <span>Pitch Demo</span>
+              <span className="w-1.5 h-1.5 rounded-full bg-[#FFD60A] animate-pulse" />
+            </Link>
             {profile && (
               <Link
                 href="/dashboard/requests"
@@ -114,6 +121,13 @@ export function NavigationBar({ profile }: { profile: UserProfile | null }) {
               className="text-[#A1A1AA] hover:text-[#F5F5F5] py-1.5"
             >
               Equipment Catalogue
+            </Link>
+            <Link
+              href="/pitch"
+              onClick={() => setMobileOpen(false)}
+              className="text-[#FFD60A] font-bold py-1.5"
+            >
+              ★ Pitch Demo Simulator
             </Link>
             {profile && (
               <Link
