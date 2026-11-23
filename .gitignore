@@ -1,0 +1,32 @@
+# dependencies
+node_modules/
+
+# Next.js build
+.next/
+out/
+
+# Environment & secrets
+.env
+.env.*
+!.env.example
+
+# Key / credential files
+*.pem
+*.key
+*.p12
+*.json.key
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Vercel
+.vercel/
+
+# Docker
+docker-compose.override.yml
+
+# IDE
+.idea/
+.vscode/
+*.swp
