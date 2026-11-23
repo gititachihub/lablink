@@ -474,7 +474,21 @@ describe('Alternatives Finder', () => {
       labClose: '18:00',
     };
 
-    const allEquipment = [mockEquipment, chemEquipment];
+    const bmeEquipment: Equipment = {
+      id: 'equip-bme-diffractometer',
+      name: 'Bio XRD',
+      description: 'Crystallography system in BME',
+      departmentId: 'dept-bme',
+      category: 'Crystallography',
+      specifications: { voltage: '40kV', source: 'Cu-Ka' },
+      isOperational: true,
+      requiresTraining: false,
+      maxBookingHours: 4,
+      labOpen: '10:00',
+      labClose: '18:00',
+    };
+
+    const allEquipment = [mockEquipment, chemEquipment, bmeEquipment];
     const req = createRequest();
 
     const alts = findAlternativeEquipment({
@@ -486,8 +500,263 @@ describe('Alternatives Finder', () => {
       ctx: defaultContext,
     });
 
-    expect(alts.length).toBeGreaterThan(0);
+    expect(alts.length).toBe(2);
     expect(alts[0].equipment.departmentId).toBe('dept-chemistry');
-    expect(alts[0].equipment.category).toBe('Crystallography');
+    expect(alts[1].equipment.departmentId).toBe('dept-bme');
+  });
+
+  it('handles alternatives when window exhausts or candidate equipment has no free slots', () => {
+    // Equipment with tight deadline where only 1 slot fits before deadline
+    const tightDeadlineReq = createRequest({
+      deadline: new Date('2026-11-24T08:30:00Z'), // Ends early on day 1
+    });
+
+    const busyEquip: Equipment = {
+      ...mockEquipment,
+      id: 'equip-busy-chem',
+      departmentId: 'dept-chem-busy',
+    };
+
+    // Fully booked equipment for next 14 days
+    const fullBookings: Booking[] = [
+      {
+        id: 'b-blocked',
+        requestId: 'r-blocked',
+        studentId: 's-other',
+        equipmentId: 'equip-busy-chem',
+        timeRange: {
+          start: new Date('2026-11-24T03:30:00Z'),
+          end: new Date('2026-12-05T12:30:00Z'),
+        },
+        createdAt: new Date(),
+      },
+    ];
+
+    const alts = findAlternativeEquipment({
+      targetEquipment: mockEquipment,
+      allEquipment: [mockEquipment, busyEquip],
+      allBookings: fullBookings,
+      request: tightDeadlineReq,
+      userQualifications: [],
+      ctx: defaultContext,
+    });
+
+    // Busy equipment had 0 free slots, so options list is empty
+    expect(alts).toHaveLength(0);
+  });
+});
+
+describe('Edge Cases for 100% Branch Coverage', () => {
+  it('covers scoring fallback when maxHoursPerStudent is zero or negative', () => {
+    const ctxZeroMax = { ...defaultContext, maxHoursPerStudent: 0 };
+    const req = createRequest();
+    const score = computeScore(req, 10, ctxZeroMax);
+    // Should fallback to default 20 hours: fairness = 1 - 10/20 = 0.5
+    expect(score.fairness).toBe(0.5);
+  });
+
+  it('covers constraints when equipment specifications missing key or specifications undefined', () => {
+    const reqMissingSpec = createRequest({
+      requiredSpecifications: { nonExistentKey: 'value123' },
+    });
+    const res = checkCategoryAndSpecMatch(reqMissingSpec, mockEquipment);
+    expect(res.pass).toBe(false);
+    expect(res.reason).toContain("specification 'nonExistentKey' (none) does not satisfy");
+
+    const reqNoSpecs = createRequest({
+      requiredCategory: 'Crystallography',
+      requiredSpecifications: undefined,
+    });
+    const resNoSpecs = checkCategoryAndSpecMatch(reqNoSpecs, mockEquipment);
+    expect(resNoSpecs.pass).toBe(true);
+  });
+
+  it('covers ranking edge cases: empty list, single request, non-overlapping requests', () => {
+    // Empty list
+    const emptyRes = rankCompetingRequests({
+      requests: [],
+      equipment: mockEquipment,
+      qualificationsByStudent: new Map(),
+      existingBookings: [],
+      studentHoursMap: new Map(),
+      ctx: defaultContext,
+    });
+    expect(emptyRes.winner).toBeNull();
+    expect(emptyRes.rankedQueue).toHaveLength(0);
+
+    // Single request
+    const singleReq = createRequest({ id: 'single-1' });
+    const singleRes = rankCompetingRequests({
+      requests: [singleReq],
+      equipment: mockEquipment,
+      qualificationsByStudent: new Map(),
+      existingBookings: [],
+      studentHoursMap: new Map(),
+      ctx: defaultContext,
+    });
+    expect(singleRes.winner?.request.id).toBe('single-1');
+    expect(singleRes.fallbacksWithAlternatives).toHaveLength(0);
+
+    // Non-overlapping requests: both are feasible at different times
+    const req1 = createRequest({
+      id: 'req-morning',
+      timeRange: {
+        start: new Date('2026-11-24T04:00:00Z'),
+        end: new Date('2026-11-24T06:00:00Z'),
+      },
+    });
+    const req2 = createRequest({
+      id: 'req-afternoon',
+      timeRange: {
+        start: new Date('2026-11-24T07:00:00Z'),
+        end: new Date('2026-11-24T09:00:00Z'),
+      },
+    });
+    const nonOverlapRes = rankCompetingRequests({
+      requests: [req1, req2],
+      equipment: mockEquipment,
+      qualificationsByStudent: new Map(),
+      existingBookings: [],
+      studentHoursMap: new Map(),
+      ctx: defaultContext,
+    });
+    expect(nonOverlapRes.winner).not.toBeNull();
+    expect(nonOverlapRes.rankedQueue).toHaveLength(2);
+
+    // Ranking where one request is infeasible (feasible comes before infeasible)
+    const infeasibleReq = createRequest({
+      id: 'req-infeasible',
+      timeRange: {
+        start: new Date('2026-11-24T01:00:00Z'), // Outside lab hours
+        end: new Date('2026-11-24T03:00:00Z'),
+      },
+    });
+    const mixedRes = rankCompetingRequests({
+      requests: [infeasibleReq, req1],
+      equipment: mockEquipment,
+      qualificationsByStudent: new Map(),
+      existingBookings: [],
+      studentHoursMap: new Map(),
+      ctx: defaultContext,
+    });
+    expect(mixedRes.winner?.request.id).toBe('req-morning');
+    expect(mixedRes.rankedQueue[0].feasible).toBe(true);
+    expect(mixedRes.rankedQueue[1].feasible).toBe(false);
+
+    // Ranking where all requests are infeasible (winner is null)
+    const allInfeasibleRes = rankCompetingRequests({
+      requests: [infeasibleReq],
+      equipment: mockEquipment,
+      qualificationsByStudent: new Map(),
+      existingBookings: [],
+      studentHoursMap: new Map(),
+      ctx: defaultContext,
+    });
+    expect(allInfeasibleRes.winner).toBeNull();
+  });
+});
+
+describe('Pitch Scenario Verification (Arjun vs Meera - Section 12)', () => {
+  it('runs the exact pitch scenario and matches Section 12 mathematical numbers', () => {
+    // Common slot: next Tuesday 14:00 to 17:00 IST (08:30 to 11:30 UTC, 3h duration)
+    const slotTimeRange = {
+      start: new Date('2026-11-24T08:30:00Z'),
+      end: new Date('2026-11-24T11:30:00Z'),
+    };
+
+    const now = new Date('2026-11-24T04:00:00Z'); // 09:30 AM IST on Tuesday
+    const ctx: AllocationContext = {
+      now,
+      maxHoursPerStudent: 20,
+      weights: { urgency: 0.35, wait: 0.35, fairness: 0.30 },
+      campusTimezone: CAMPUS_TIMEZONE,
+    };
+
+    // Student 1: Arjun Patel
+    // Claimed deadline in 2 days (2026-11-26T04:00:00Z)
+    // Submitted 3 days ago (2026-11-21T04:00:00Z)
+    // Past usage: 2 hours this month
+    const reqArjun: BookingRequest = {
+      id: 'req-arjun',
+      studentId: 'student1@lablink.demo',
+      equipmentId: mockEquipment.id,
+      timeRange: slotTimeRange,
+      projectTitle: 'Thin-film analysis',
+      projectDescription: 'XRD characterization for senior thesis project',
+      deadline: new Date('2026-11-26T04:00:00Z'),
+      deadlineVerified: false,
+      status: 'pending',
+      createdAt: new Date('2026-11-21T04:00:00Z'),
+      requiredCategory: 'Crystallography',
+      requiredSpecifications: { voltage: '40kV' },
+    };
+
+    // Student 2: Meera Nair
+    // Claimed deadline in 10 days (2026-12-04T04:00:00Z)
+    // Submitted 1 day ago (2026-11-23T04:00:00Z)
+    // Past usage: 12 hours this month
+    const reqMeera: BookingRequest = {
+      id: 'req-meera',
+      studentId: 'student2@lablink.demo',
+      equipmentId: mockEquipment.id,
+      timeRange: slotTimeRange,
+      projectTitle: 'Nanocrystal synthesis analysis',
+      projectDescription: 'Phase purity analysis for materials project',
+      deadline: new Date('2026-12-04T04:00:00Z'),
+      deadlineVerified: false,
+      status: 'pending',
+      createdAt: new Date('2026-11-23T04:00:00Z'),
+      requiredCategory: 'Crystallography',
+      requiredSpecifications: { voltage: '40kV' },
+    };
+
+    const studentHoursMap = new Map([
+      ['student1@lablink.demo', 2],
+      ['student2@lablink.demo', 12],
+    ]);
+
+    // Compute standalone scores
+    const arjunScore = computeScore(reqArjun, 2, ctx);
+    const meeraScore = computeScore(reqMeera, 12, ctx);
+
+    // Verify Arjun individual scores:
+    // Urgency = 1 - 2/14 = 0.85714...
+    expect(arjunScore.urgency).toBeCloseTo(0.857, 3);
+    // Wait = 3/7 = 0.42857...
+    expect(arjunScore.wait).toBeCloseTo(0.429, 3);
+    // Fairness = 1 - 2/20 = 0.900
+    expect(arjunScore.fairness).toBeCloseTo(0.900, 3);
+    // Weighted final score = (0.35 * 0.85714) + (0.35 * 0.42857) + (0.30 * 0.900) = 0.720
+    expect(arjunScore.finalScore).toBe(0.720);
+
+    // Verify Meera individual scores:
+    // Urgency = 1 - 10/14 = 0.28571...
+    expect(meeraScore.urgency).toBeCloseTo(0.286, 3);
+    // Wait = 1/7 = 0.14285...
+    expect(meeraScore.wait).toBeCloseTo(0.143, 3);
+    // Fairness = 1 - 12/20 = 0.400
+    expect(meeraScore.fairness).toBeCloseTo(0.400, 3);
+    // Weighted final score = (0.35 * 0.28571) + (0.35 * 0.14285) + (0.30 * 0.400) = 0.270
+    expect(meeraScore.finalScore).toBe(0.270);
+
+    // Run ranking through the engine
+    const rankingResult = rankCompetingRequests({
+      requests: [reqMeera, reqArjun], // input order should not affect winner
+      equipment: mockEquipment,
+      qualificationsByStudent: new Map(),
+      existingBookings: [],
+      studentHoursMap,
+      ctx,
+    });
+
+    // Arjun is declared winner
+    expect(rankingResult.winner?.request.id).toBe('req-arjun');
+    expect(rankingResult.winner?.scoreBreakdown?.finalScore).toBe(0.720);
+
+    // Meera is in fallbacks with calculated alternatives
+    expect(rankingResult.fallbacksWithAlternatives).toHaveLength(1);
+    expect(rankingResult.fallbacksWithAlternatives[0].request.id).toBe('req-meera');
+    expect(rankingResult.fallbacksWithAlternatives[0].scoreBreakdown?.finalScore).toBe(0.270);
+    expect(rankingResult.fallbacksWithAlternatives[0].alternativeSlots!.length).toBeGreaterThan(0);
   });
 });

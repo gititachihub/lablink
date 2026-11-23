@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { validateTimeRange } from './validate';
+import { isWithinLabHours } from './time';
 
 describe('Booking Time Range Validation', () => {
   it('rejects missing start or end dates', () => {
@@ -56,5 +57,12 @@ describe('Booking Time Range Validation', () => {
     );
     expect(res.valid).toBe(true);
     expect(res.error).toBeUndefined();
+  });
+
+  it('isWithinLabHours returns false when range spans multiple calendar days', () => {
+    const day1 = new Date('2026-11-24T16:00:00Z');
+    const day2 = new Date('2026-11-25T05:00:00Z');
+    const within = isWithinLabHours(day1, day2, '09:00', '18:00');
+    expect(within).toBe(false);
   });
 });

@@ -9,6 +9,12 @@ export default defineConfig({
       provider: 'v8',
       reporter: ['text', 'json', 'html'],
       include: ['src/domain/**/*.ts'],
+      exclude: ['src/domain/types.ts'],
+      thresholds: {
+        lines: 85,
+        functions: 85,
+        branches: 80,
+      },
     },
   },
   resolve: {
