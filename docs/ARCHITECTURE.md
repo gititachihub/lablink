@@ -3,11 +3,12 @@
 > GenAI campus lab resource-sharing platform.
 > Students discover specialised equipment across departments, book slots, submit
 > project-based access requests, faculty approve, and the system resolves conflicts
-> by recommending fair, feasible allocations using project deadlines, availability
+> by recommending fair, feasible allocations using project deadlines, availability,
 > and student requirements.
 
 **Stack (all free-tier):** Next.js 16 App Router · TypeScript strict · Supabase
-(Postgres 15, Auth, RLS) · Gemini API (free tier, server-only) · Vercel Hobby.
+(Postgres 15, Auth, RLS) · Gemini API (`@google/genai`, free tier, server-only) · Vercel Hobby.
+No paid services.
 
 ---
 
@@ -15,38 +16,41 @@
 
 ```
 src/
-├── domain/                     # ★ Pure functions — zero I/O, zero imports from Next/Supabase
+├── domain/                     # ★ Pure functions — zero I/O, zero external network/DB imports
 │   ├── types.ts                #   Branded types, enums, interfaces for the entire domain
 │   ├── allocation/
 │   │   ├── constraints.ts      #   Hard-constraint filters (operational, free, eligible, lab-hours, deadline)
-│   │   ├── scoring.ts          #   Weighted soft-score calculator
+│   │   ├── scoring.ts          #   Weighted soft-score calculator (urgency, wait, fairness, spec fit)
+│   │   ├── ranking.ts          #   rankCompetingRequests: grouping, ranking, tie-breaking, alternatives
 │   │   ├── engine.ts           #   Orchestrator: filter → score → rank → explain → alternatives
-│   │   └── explain.ts          #   Human-readable explanation builder
+│   │   └── explain.ts          #   Human-readable explanation builder ("claimed deadline", score breakdown)
 │   ├── booking/
-│   │   ├── validate.ts         #   Booking-request validation rules
-│   │   └── time.ts             #   UTC ↔ campus-time helpers (pure; uses Intl, no library)
+│   │   ├── validate.ts         #   Booking-request validation rules (bounds, non-zero, limits)
+│   │   └── time.ts             #   UTC ↔ campus-time helpers (pure; uses Intl.DateTimeFormat, no moment/dayjs)
 │   └── gemini/
-│       ├── prompt.ts           #   Prompt template for structured extraction
-│       └── parse.ts            #   Zod schema + post-parse normalisation (pure)
+│       ├── prompt.ts           #   Prompt template injecting today's date, timezone, catalogue schema
+│       └── parse.ts            #   Zod schema with string max lengths + normalization (pure)
 │
-├── data/                       # Data-access layer — only file that imports Supabase client
-│   ├── supabase/
-│   │   ├── server.ts           #   createServerClient (cookies-based, for RSC / actions)
-│   │   └── browser.ts          #   createBrowserClient (for client components, auth only)
-│   ├── equipment.repo.ts       #   CRUD + search queries
-│   ├── booking.repo.ts         #   Request + confirmed-booking queries
-│   ├── profile.repo.ts         #   Profile queries
-│   ├── department.repo.ts
-│   └── audit.repo.ts           #   Append-only audit log writer
+├── data/                       # Data-access layer — raw DB interactions & Supabase clients
+│   └── supabase/
+│       ├── server.ts           #   createServerClient (cookie-based, for RSC / queries / actions)
+│       └── browser.ts          #   createBrowserClient (for client components, auth state only)
 │
-├── actions/                    # Next.js Server Actions — thin orchestration layer
-│   ├── booking.actions.ts      #   submitRequest, cancelRequest
-│   ├── approval.actions.ts     #   approveRequest, rejectRequest (faculty/admin)
-│   ├── equipment.actions.ts    #   CRUD (admin)
-│   ├── gemini.actions.ts       #   parseNaturalLanguageRequest
+├── queries/                    # ★ Read-only data fetchers for Server Components (reads only)
+│   ├── equipment.queries.ts    #   Catalogue list, item details, specifications
+│   ├── booking.queries.ts      #   get_equipment_busy_ranges (anonymised), my bookings/requests
+│   ├── department.queries.ts   #   Department lookups
+│   ├── profile.queries.ts      #   Current user profile (limited safe fields)
+│   └── audit.queries.ts        #   Audit log reader (admin-only)
+│
+├── actions/                    # ★ Next.js Server Actions — write operations only (invokes RPCs)
+│   ├── booking.actions.ts      #   submitRequest (student), cancelRequest (calls cancel_booking_request RPC)
+│   ├── approval.actions.ts     #   approveRequest, rejectRequest (calls review_booking_request RPC)
+│   ├── equipment.actions.ts    #   createEquipment, updateEquipment (admin / faculty)
+│   ├── gemini.actions.ts       #   parseNaturalLanguageRequest (authenticated, rate-limited per user)
 │   └── auth.actions.ts         #   signIn, signUp, signOut wrappers
 │
-├── app/                        # Next.js App Router — pages & layouts only
+├── app/                        # Next.js App Router — pages & layouts
 │   ├── layout.tsx              #   Root layout (html, body, providers, skip-link)
 │   ├── page.tsx                #   Landing / public equipment catalogue
 │   ├── (auth)/
@@ -56,59 +60,58 @@ src/
 │   │   ├── layout.tsx          #   Authenticated shell, role-based nav
 │   │   ├── page.tsx            #   Role-aware dashboard home
 │   │   ├── equipment/
-│   │   │   ├── page.tsx        #   Browse & search
-│   │   │   └── [id]/page.tsx   #   Detail + booking form
+│   │   │   ├── page.tsx        #   Browse & search catalogue
+│   │   │   └── [id]/page.tsx   #   Detail + booking form (with untrusted AI prefill)
 │   │   ├── bookings/
-│   │   │   ├── page.tsx        #   My bookings (student) / department bookings (faculty)
-│   │   │   └── [id]/page.tsx   #   Request detail + approval panel
+│   │   │   ├── page.tsx        #   My bookings (student) / department queue (faculty)
+│   │   │   └── [id]/page.tsx   #   Request detail + ranking & approval panel
 │   │   └── admin/
 │   │       ├── equipment/page.tsx
-│   │       └── users/page.tsx
-│   └── api/
-│       └── webhooks/           #   Supabase auth webhook (profile creation)
-│           └── route.ts
+│   │       └── audit/page.tsx
 │
 ├── components/
 │   ├── ui/                     #   Primitive accessible components (Button, Input, Dialog, etc.)
 │   ├── equipment/              #   EquipmentCard, EquipmentGrid, EquipmentFilters
-│   ├── booking/                #   BookingForm, BookingTimeline, BookingStatus
-│   ├── allocation/             #   AllocationExplanation, AlternativeSlots
+│   ├── booking/                #   BookingForm, BookingTimeline, BookingStatusBadge
+│   ├── allocation/             #   AllocationExplanation, CompetingQueueTable, AlternativeSlots
 │   └── layout/                 #   Nav, Sidebar, SkipLink, Footer
 │
 ├── lib/
-│   ├── gemini.ts               #   GoogleGenerativeAI client init (server-only, reads env)
-│   ├── validators.ts           #   Shared Zod schemas (re-exported from domain for actions)
-│   ├── constants.ts            #   Campus timezone, lab-hour defaults, scoring weights
+│   ├── gemini.server.ts        #   import 'server-only'; GoogleGenAI initialization
+│   ├── ratelimit.server.ts     #   import 'server-only'; Per-user sliding-window rate limiter
+│   ├── catalogue-matcher.server.ts # Exact & fuzzy matching from string to real equipment UUID
+│   ├── validators.ts           #   Shared Zod schemas (re-exported from domain)
+│   ├── constants.ts            #   Campus timezone, max pending cap, weights, lab hours
 │   └── utils.ts                #   cn() helper, formatters
 │
-└── seed/                       #   Seed scripts (§ 11), never imported by app code
-    ├── seed.ts
-    └── data.ts
+└── seed/                       # Local seed scripts (uses SERVICE_ROLE_KEY, never deployed to Vercel)
+    ├── seed.ts                 # Relative date generator + Supabase seeder
+    └── data.ts                 # 3 departments, 12 equipment, demo student/faculty accounts
 ```
 
-**Boundary rules enforced by import linting:**
+**Architectural Boundary Rules:**
 
-| Layer | May import from |
-|---|---|
-| `domain/` | Only `domain/` (stdlib + `zod` for schemas) |
-| `data/` | `domain/`, Supabase SDK |
-| `actions/` | `domain/`, `data/`, `lib/` |
-| `components/` | `domain/types`, `lib/`, other `components/` |
-| `app/` | Everything except `data/` directly (goes through `actions/`) |
+| Layer | Responsibility | Permitted Imports | Forbidden Imports |
+|---|---|---|---|
+| `src/domain/` | Pure business logic, math, constraints, ranking | Stdlib, `zod` | Next.js, React, Supabase, network, DB, files |
+| `src/queries/` | **Reads only** for Server Components | `src/domain/`, `src/data/supabase/server` | `src/actions/`, mutation RPCs |
+| `src/actions/` | **Writes only** (Server Actions) | `src/domain/`, `src/data/`, `src/lib/` | Direct SQL, bypassing Postgres RPCs |
+| `src/lib/*.server.ts` | Server-only infrastructure | `server-only`, `@google/genai` | Any client component |
+| `src/components/` | Accessible UI rendering | `src/domain/types`, `src/lib/utils` | Direct DB clients, `server-only` modules |
 
 ---
 
-## 2. Database Schema
+## 2. Database Schema & Integrity Constraints
 
-> All timestamps are `TIMESTAMPTZ` stored in **UTC**.
-> Display uses `Intl.DateTimeFormat` with `Asia/Kolkata` (or configurable campus zone).
+All timestamps are `TIMESTAMPTZ` stored in **UTC**.
+Database enforces bounded ranges, foreign keys, row-level security, and atomic constraints.
 
 ```sql
 -- ============================================================
 -- Extensions
 -- ============================================================
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";   -- gen_random_uuid()
-CREATE EXTENSION IF NOT EXISTS "btree_gist"; -- exclusion constraint on tstzrange
+CREATE EXTENSION IF NOT EXISTS "btree_gist"; -- exclusion constraint on (uuid, tstzrange)
 
 -- ============================================================
 -- departments
@@ -123,7 +126,7 @@ CREATE TABLE departments (
 );
 
 -- ============================================================
--- profiles  (1-to-1 with auth.users, populated by trigger)
+-- profiles (1-to-1 with auth.users, maintained by DB trigger)
 -- ============================================================
 CREATE TABLE profiles (
   id              UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
@@ -139,6 +142,24 @@ CREATE TABLE profiles (
 
 CREATE INDEX idx_profiles_department ON profiles(department_id);
 CREATE INDEX idx_profiles_role       ON profiles(role);
+
+-- ============================================================
+-- user_qualifications (evaluates H3: access eligibility)
+-- ============================================================
+CREATE TABLE user_qualifications (
+  id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id            UUID NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  qualification_type TEXT NOT NULL
+                       CHECK (qualification_type IN ('training', 'certification', 'department_membership')),
+  qualification_name TEXT NOT NULL,
+  verified_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at         TIMESTAMPTZ, -- NULL means never expires
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT chk_qualification_dates CHECK (expires_at IS NULL OR expires_at > verified_at)
+);
+
+CREATE INDEX idx_user_qualifications_user ON user_qualifications(user_id);
+CREATE INDEX idx_user_qualifications_name ON user_qualifications(qualification_name);
 
 -- ============================================================
 -- equipment
@@ -158,7 +179,8 @@ CREATE TABLE equipment (
   lab_close          TIME NOT NULL DEFAULT '18:00',
   image_url          TEXT,
   created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+  updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT chk_lab_hours CHECK (lab_close > lab_open)
 );
 
 CREATE INDEX idx_equipment_department ON equipment(department_id);
@@ -190,21 +212,30 @@ CREATE TABLE booking_requests (
   student_id               UUID NOT NULL REFERENCES profiles(id),
   equipment_id             UUID NOT NULL REFERENCES equipment(id),
   time_range               TSTZRANGE NOT NULL,
-  project_title            TEXT NOT NULL,
-  project_description      TEXT NOT NULL,
+  project_title            TEXT NOT NULL CHECK (char_length(project_title) BETWEEN 3 AND 150),
+  project_description      TEXT NOT NULL CHECK (char_length(project_description) BETWEEN 10 AND 2000),
   deadline                 TIMESTAMPTZ NOT NULL,
+  deadline_verified        BOOLEAN NOT NULL DEFAULT false, -- Faculty-verified flag
   status                   TEXT NOT NULL DEFAULT 'pending'
-                             CHECK (status IN ('pending','approved','rejected','cancelled')),
+                             CHECK (status IN ('pending', 'approved', 'rejected', 'cancelled')),
   reviewed_by              UUID REFERENCES profiles(id),
-  review_note              TEXT,
-  -- Gemini-parsed fields (nullable — form works without AI)
-  ai_parsed_fields         JSONB,
-  -- Allocation engine output
-  allocation_score         NUMERIC(5,2),
+  review_note              TEXT CHECK (review_note IS NULL OR char_length(review_note) <= 1000),
+  ai_parsed_fields         JSONB,       -- Untrusted AI prefill snapshot
+  allocation_score         NUMERIC(5,2),-- Submission-time snapshot only
   allocation_explanation   TEXT,
   alternative_slots        JSONB,       -- Array of {start, end, score}
   created_at               TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at               TIMESTAMPTZ NOT NULL DEFAULT now()
+  updated_at               TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+  -- ★ STRICT BOUNDED TIME RANGE CONSTRAINT (prevents unbounded/empty ranges)
+  CONSTRAINT chk_bounded_request_range CHECK (
+    NOT isempty(time_range) AND
+    lower_inc(time_range) AND
+    NOT upper_inc(time_range) AND
+    lower(time_range) IS NOT NULL AND
+    upper(time_range) IS NOT NULL AND
+    upper(time_range) > lower(time_range)
+  )
 );
 
 CREATE INDEX idx_br_student    ON booking_requests(student_id);
@@ -213,7 +244,7 @@ CREATE INDEX idx_br_status     ON booking_requests(status);
 CREATE INDEX idx_br_time_range ON booking_requests USING GIST (time_range);
 
 -- ============================================================
--- bookings  (confirmed only — the source of truth for schedule)
+-- bookings (confirmed only — physical source of truth)
 -- ============================================================
 CREATE TABLE bookings (
   id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -223,7 +254,17 @@ CREATE TABLE bookings (
   time_range    TSTZRANGE NOT NULL,
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
 
-  -- ★ EXCLUSION CONSTRAINT: impossible to INSERT overlapping approved bookings
+  -- ★ STRICT BOUNDED TIME RANGE CONSTRAINT
+  CONSTRAINT chk_bounded_booking_range CHECK (
+    NOT isempty(time_range) AND
+    lower_inc(time_range) AND
+    NOT upper_inc(time_range) AND
+    lower(time_range) IS NOT NULL AND
+    upper(time_range) IS NOT NULL AND
+    upper(time_range) > lower(time_range)
+  ),
+
+  -- ★ EXCLUSION CONSTRAINT: overlap physically impossible at Postgres kernel level
   EXCLUDE USING GIST (equipment_id WITH =, time_range WITH &&)
 );
 
@@ -232,703 +273,763 @@ CREATE INDEX idx_bookings_equipment ON bookings(equipment_id);
 CREATE INDEX idx_bookings_range     ON bookings USING GIST (time_range);
 
 -- ============================================================
--- audit_log  (append-only)
+-- audit_log (immutable append-only log; ip_address dropped)
 -- ============================================================
 CREATE TABLE audit_log (
   id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   actor_id    UUID NOT NULL REFERENCES profiles(id),
-  action      TEXT NOT NULL,          -- 'request.created', 'request.approved', etc.
+  action      TEXT NOT NULL, -- 'request.created', 'request.approved', 'request.rejected', 'request.cancelled'
   table_name  TEXT NOT NULL,
   record_id   UUID NOT NULL,
   old_data    JSONB,
   new_data    JSONB,
-  ip_address  INET,
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE INDEX idx_audit_actor  ON audit_log(actor_id);
 CREATE INDEX idx_audit_action ON audit_log(action);
 CREATE INDEX idx_audit_time   ON audit_log(created_at);
+
+-- IMMUTABILITY: Revoke update and delete completely
+REVOKE UPDATE, DELETE, TRUNCATE ON audit_log FROM PUBLIC, authenticated, anon;
 ```
 
 ---
 
-## 3. Booking Safety
+## 3. Booking Safety & Concurrency
 
-### Database-Level Guarantee
+### Database-Level Exclusion Constraint
 
+Overlapping bookings are prevented by the Postgres `btree_gist` exclusion constraint:
 ```sql
 EXCLUDE USING GIST (equipment_id WITH =, time_range WITH &&)
 ```
 
-This constraint on the `bookings` table makes it **physically impossible** to insert
-two rows whose `equipment_id` matches and whose `time_range` values overlap. Any
-concurrent `INSERT` that would create an overlap receives a unique-violation error.
-
-### Flow
-
-```
-Student submits request
-  → booking_requests row (status = 'pending')
-  → allocation engine scores the request
-  → NO row in bookings yet — pending requests never block a slot
-
-Faculty approves
-  → Server action: BEGIN transaction
-      1. UPDATE booking_requests SET status = 'approved'
-      2. INSERT INTO bookings (...) — exclusion constraint checked here
-      COMMIT
-  → If constraint violation → transaction rolls back,
-    action returns "slot no longer available" + fresh alternatives
-```
-
-### Time Handling
-
-| Concern | Approach |
-|---|---|
-| Storage | All `TIMESTAMPTZ` columns store UTC |
-| Server | Node.js runtime uses UTC (`TZ=UTC` in env) |
-| Display | `Intl.DateTimeFormat('en-IN', { timeZone: 'Asia/Kolkata' })` |
-| Input | UI date-time picker labelled "Campus Time (IST)" → converted to UTC before sending |
-| DST safety | India does not observe DST; architecture supports arbitrary IANA zones if needed |
+1. **Pending requests NEVER hold a lock or block a slot.** Any number of students may request the same time window.
+2. Only confirmed bookings enter the `bookings` table.
+3. Approval runs through a `SECURITY DEFINER` stored procedure inside a single serialised transaction:
+   - Sets `booking_requests.status = 'approved'`
+   - Inserts into `bookings`
+   - Logs to `audit_log`
+4. If two faculty members concurrently approve two requests for the same equipment and overlapping times, the second `INSERT` raises SQLSTATE `23P01` (`exclusion_violation`). The procedure catches this error, rolls back the approval, updates the losing request with fresh alternative slots, and returns a clean conflict payload.
 
 ---
 
-## 4. Roles & Row-Level Security
+## 4. Roles, Profiles, RLS, and Postgres RPC Functions
 
-### Roles
+### Roles & Security Model
+- **Roles:** `student`, `faculty`, `admin`.
+- The deployed application runs **entirely** with `anon` and `authenticated` Supabase roles. **The `SUPABASE_SERVICE_ROLE_KEY` is never deployed to Vercel or used by application code.** It is restricted to local seed scripts.
+- To prevent RLS performance degradation and recursion, all policies use `(SELECT auth.uid())`.
 
-| Role | Capabilities |
-|---|---|
-| `student` | Browse equipment, submit booking requests, view own requests/bookings, cancel own pending requests |
-| `faculty` | Everything a student can do + approve/reject requests for their department's equipment |
-| `admin` | Everything + manage equipment, manage departments, view audit log, view all users |
+### 1. Hardcoded Profile Creation Trigger
+Users cannot supply their own role on registration. The trigger ignores `raw_user_meta_data->>'role'` completely:
 
-### RLS Policies
+```sql
+CREATE OR REPLACE FUNCTION public.handle_new_user()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_default_dept UUID;
+BEGIN
+  -- Default to Physics department if none provided
+  SELECT id INTO v_default_dept FROM departments WHERE name = 'Physics' LIMIT 1;
 
-> `auth.uid()` returns the current user's ID.
-> Helper: `get_my_role()` and `get_my_department_id()` are `SECURITY DEFINER`
-> SQL functions that query `profiles` once per statement.
+  INSERT INTO public.profiles (id, email, full_name, role, department_id, student_id)
+  VALUES (
+    NEW.id,
+    NEW.email,
+    COALESCE(NEW.raw_user_meta_data->>'full_name', 'Campus Member'),
+    'student', -- HARDCODED: never trust metadata
+    COALESCE((NEW.raw_user_meta_data->>'department_id')::UUID, v_default_dept),
+    NEW.raw_user_meta_data->>'student_id'
+  );
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER on_auth_user_created
+  AFTER INSERT ON auth.users
+  FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
+```
+
+### 2. Profile Security & Limited Field Exposure
+- `SELECT` is restricted to authenticated users.
+- Users can update **only** `full_name`. Attempts to modify `role`, `department_id`, or `email` are blocked by trigger:
+
+```sql
+CREATE OR REPLACE FUNCTION public.protect_profile_fields()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+  IF NEW.role IS DISTINCT FROM OLD.role THEN
+    RAISE EXCEPTION 'Role elevation is forbidden';
+  END IF;
+  IF NEW.department_id IS DISTINCT FROM OLD.department_id THEN
+    RAISE EXCEPTION 'Department modification is forbidden';
+  END IF;
+  IF NEW.email IS DISTINCT FROM OLD.email THEN
+    RAISE EXCEPTION 'Email modification is forbidden';
+  END IF;
+  NEW.updated_at = now();
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER trg_protect_profile_fields
+  BEFORE UPDATE ON profiles
+  FOR EACH ROW EXECUTE FUNCTION public.protect_profile_fields();
+```
+
+### 3. Row Level Security Policies
 
 ```sql
 ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE user_qualifications ENABLE ROW LEVEL SECURITY;
 ALTER TABLE equipment ENABLE ROW LEVEL SECURITY;
 ALTER TABLE access_requirements ENABLE ROW LEVEL SECURITY;
 ALTER TABLE booking_requests ENABLE ROW LEVEL SECURITY;
 ALTER TABLE bookings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE audit_log ENABLE ROW LEVEL SECURITY;
 
--- ── Helper functions ──────────────────────────────────────
-CREATE OR REPLACE FUNCTION get_my_role()
-RETURNS TEXT LANGUAGE sql STABLE SECURITY DEFINER AS $$
-  SELECT role FROM profiles WHERE id = auth.uid();
+-- Helper functions (SECURITY DEFINER with fixed search_path)
+CREATE OR REPLACE FUNCTION public.get_my_role()
+RETURNS TEXT LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public, pg_temp AS $$
+  SELECT role FROM profiles WHERE id = (SELECT auth.uid());
 $$;
 
-CREATE OR REPLACE FUNCTION get_my_department_id()
-RETURNS UUID LANGUAGE sql STABLE SECURITY DEFINER AS $$
-  SELECT department_id FROM profiles WHERE id = auth.uid();
+CREATE OR REPLACE FUNCTION public.get_my_department_id()
+RETURNS UUID LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public, pg_temp AS $$
+  SELECT department_id FROM profiles WHERE id = (SELECT auth.uid());
 $$;
 
--- ── profiles ──────────────────────────────────────────────
--- Anyone authenticated can read basic profile info (name, department)
-CREATE POLICY profiles_select ON profiles FOR SELECT
-  USING (true);
+-- ── profiles ──
+CREATE POLICY profiles_select_authenticated ON profiles FOR SELECT
+  TO authenticated USING (true);
 
--- Users can update their own row EXCEPT the role column
--- (role changes are admin-only via a dedicated admin action that
---  uses the service_role key, bypassing RLS)
-CREATE POLICY profiles_update ON profiles FOR UPDATE
-  USING (id = auth.uid())
-  WITH CHECK (id = auth.uid() AND role = (SELECT role FROM profiles WHERE id = auth.uid()));
+CREATE POLICY profiles_update_own ON profiles FOR UPDATE
+  TO authenticated
+  USING (id = (SELECT auth.uid()))
+  WITH CHECK (id = (SELECT auth.uid()));
 
--- Insert handled by auth trigger (service_role), not user-facing
--- Delete: not permitted via API
-
--- ── equipment ─────────────────────────────────────────────
--- Public read: anyone (even anon) can browse the catalogue
-CREATE POLICY equipment_select ON equipment FOR SELECT
-  USING (true);
-
--- Insert / Update / Delete: admin or faculty of that department
-CREATE POLICY equipment_mutate ON equipment FOR ALL
+-- ── user_qualifications ──
+CREATE POLICY qualifications_select ON user_qualifications FOR SELECT
+  TO authenticated
   USING (
-    get_my_role() = 'admin'
-    OR (get_my_role() = 'faculty' AND department_id = get_my_department_id())
-  )
-  WITH CHECK (
-    get_my_role() = 'admin'
-    OR (get_my_role() = 'faculty' AND department_id = get_my_department_id())
+    user_id = (SELECT auth.uid()) OR
+    public.get_my_role() IN ('faculty', 'admin')
   );
 
--- ── access_requirements ───────────────────────────────────
--- Readable by all (students need to know what's required)
+-- ── equipment (Catalogue is public read) ──
+CREATE POLICY equipment_select_public ON equipment FOR SELECT
+  USING (true);
+
+CREATE POLICY equipment_mutate ON equipment FOR ALL
+  TO authenticated
+  USING (
+    public.get_my_role() = 'admin' OR
+    (public.get_my_role() = 'faculty' AND department_id = public.get_my_department_id())
+  );
+
+-- ── access_requirements ──
 CREATE POLICY access_req_select ON access_requirements FOR SELECT
   USING (true);
 
--- Mutable by admin / owning-department faculty
-CREATE POLICY access_req_mutate ON access_requirements FOR ALL
-  USING (
-    get_my_role() = 'admin'
-    OR (get_my_role() = 'faculty'
-        AND (SELECT department_id FROM equipment WHERE id = equipment_id)
-            = get_my_department_id())
-  );
-
--- ── booking_requests ──────────────────────────────────────
+-- ── booking_requests ──
 -- Students see only their own; faculty see their department's; admin sees all
 CREATE POLICY br_select ON booking_requests FOR SELECT
+  TO authenticated
   USING (
-    student_id = auth.uid()
-    OR (get_my_role() = 'faculty'
-        AND (SELECT department_id FROM equipment WHERE id = equipment_id)
-            = get_my_department_id())
-    OR get_my_role() = 'admin'
+    student_id = (SELECT auth.uid()) OR
+    (public.get_my_role() = 'faculty' AND (SELECT department_id FROM equipment WHERE id = equipment_id) = public.get_my_department_id()) OR
+    public.get_my_role() = 'admin'
   );
 
--- Only students can insert, and only as themselves
-CREATE POLICY br_insert ON booking_requests FOR INSERT
+-- Students can insert: MUST be pending, no scores/explanations/reviews prefilled
+CREATE POLICY br_insert_student ON booking_requests FOR INSERT
+  TO authenticated
   WITH CHECK (
-    get_my_role() = 'student'
-    AND student_id = auth.uid()
+    public.get_my_role() = 'student' AND
+    student_id = (SELECT auth.uid()) AND
+    status = 'pending' AND
+    reviewed_by IS NULL AND
+    review_note IS NULL AND
+    allocation_score IS NULL AND
+    allocation_explanation IS NULL AND
+    alternative_slots IS NULL AND
+    deadline_verified = false AND
+    -- Cap on active pending requests: maximum 3 per student
+    (
+      SELECT count(*) FROM booking_requests
+      WHERE student_id = (SELECT auth.uid()) AND status = 'pending'
+    ) < 3
   );
 
--- Students can cancel own pending; faculty can approve/reject their dept's
-CREATE POLICY br_update ON booking_requests FOR UPDATE
+-- Direct UPDATE revoked for students; updates occur via RPC functions
+CREATE POLICY br_update_faculty_admin ON booking_requests FOR UPDATE
+  TO authenticated
   USING (
-    (student_id = auth.uid() AND status = 'pending')
-    OR (get_my_role() = 'faculty'
-        AND (SELECT department_id FROM equipment WHERE id = equipment_id)
-            = get_my_department_id())
-    OR get_my_role() = 'admin'
+    (public.get_my_role() = 'faculty' AND (SELECT department_id FROM equipment WHERE id = equipment_id) = public.get_my_department_id()) OR
+    public.get_my_role() = 'admin'
   );
 
--- ── bookings ──────────────────────────────────────────────
--- Same visibility as booking_requests
+-- ── bookings ──
+-- Students can only read THEIR OWN confirmed bookings row
 CREATE POLICY bookings_select ON bookings FOR SELECT
+  TO authenticated
   USING (
-    student_id = auth.uid()
-    OR (get_my_role() = 'faculty'
-        AND (SELECT department_id FROM equipment WHERE id = equipment_id)
-            = get_my_department_id())
-    OR get_my_role() = 'admin'
+    student_id = (SELECT auth.uid()) OR
+    (public.get_my_role() = 'faculty' AND (SELECT department_id FROM equipment WHERE id = equipment_id) = public.get_my_department_id()) OR
+    public.get_my_role() = 'admin'
   );
 
--- Insert only via server action (service_role); no direct user inserts
--- Update/Delete: admin only via service_role
+-- No direct client INSERT/UPDATE/DELETE on bookings (RPC handles it)
+CREATE POLICY bookings_no_client_mutation ON bookings FOR ALL
+  TO authenticated USING (false);
 
--- ── audit_log ─────────────────────────────────────────────
--- Read: admin only
+-- ── audit_log ──
 CREATE POLICY audit_select ON audit_log FOR SELECT
-  USING (get_my_role() = 'admin');
-
--- Write: via service_role in server actions; no direct user writes
+  TO authenticated
+  USING (public.get_my_role() = 'admin');
 ```
 
-### Role Escalation Prevention
+### 4. Anonymised Availability Function
+Students never read other students' bookings directly. Availability queries call this RPC:
 
-- The `profiles_update` policy's `WITH CHECK` clause compares the incoming `role`
-  against the existing `role`, ensuring users **cannot change their own role**.
-- Role changes are performed exclusively by admin server actions using the
-  `SUPABASE_SERVICE_ROLE_KEY`, which bypasses RLS.
-- The `service_role` key is **never** exposed to the client.
+```sql
+CREATE OR REPLACE FUNCTION public.get_equipment_busy_ranges(
+  p_equipment_id UUID,
+  p_from TIMESTAMPTZ,
+  p_to TIMESTAMPTZ
+)
+RETURNS TABLE (busy_range TSTZRANGE)
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+  SELECT time_range AS busy_range
+  FROM bookings
+  WHERE equipment_id = p_equipment_id
+    AND time_range && tstzrange(p_from, p_to, '[)');
+$$;
+
+REVOKE EXECUTE ON FUNCTION public.get_equipment_busy_ranges FROM anon;
+GRANT EXECUTE ON FUNCTION public.get_equipment_busy_ranges TO authenticated;
+```
+
+### 5. Atomic State Transition RPCs (Approve / Reject / Cancel)
+Executes status change, booking insertion/deletion, and audit logging in a single transaction with SQLSTATE `23P01` error handling:
+
+```sql
+CREATE OR REPLACE FUNCTION public.review_booking_request(
+  p_request_id UUID,
+  p_action TEXT, -- 'approved' or 'rejected'
+  p_note TEXT DEFAULT NULL
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_req RECORD;
+  v_caller_role TEXT;
+  v_caller_dept UUID;
+  v_equip_dept UUID;
+  v_booking_id UUID;
+BEGIN
+  IF p_action NOT IN ('approved', 'rejected') THEN
+    RAISE EXCEPTION 'Invalid action';
+  END IF;
+
+  SELECT * INTO v_req FROM booking_requests WHERE id = p_request_id FOR UPDATE;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Request not found';
+  END IF;
+  IF v_req.status <> 'pending' THEN
+    RAISE EXCEPTION 'Request is no longer pending (status: %)', v_req.status;
+  END IF;
+
+  -- Verify faculty department permissions
+  v_caller_role := public.get_my_role();
+  v_caller_dept := public.get_my_department_id();
+  SELECT department_id INTO v_equip_dept FROM equipment WHERE id = v_req.equipment_id;
+
+  IF v_caller_role <> 'admin' AND (v_caller_role <> 'faculty' OR v_caller_dept <> v_equip_dept) THEN
+    RAISE EXCEPTION 'Not authorized to review requests for this department equipment';
+  END IF;
+
+  IF p_action = 'rejected' THEN
+    UPDATE booking_requests
+    SET status = 'rejected',
+        reviewed_by = (SELECT auth.uid()),
+        review_note = p_note,
+        updated_at = now()
+    WHERE id = p_request_id;
+
+    INSERT INTO audit_log (actor_id, action, table_name, record_id, old_data, new_data)
+    VALUES ((SELECT auth.uid()), 'request.rejected', 'booking_requests', p_request_id,
+            jsonb_build_object('status', 'pending'),
+            jsonb_build_object('status', 'rejected', 'note', p_note));
+
+    RETURN jsonb_build_object('success', true, 'status', 'rejected');
+  END IF;
+
+  -- APPROVAL FLOW: Atomic INSERT into bookings
+  BEGIN
+    UPDATE booking_requests
+    SET status = 'approved',
+        reviewed_by = (SELECT auth.uid()),
+        review_note = p_note,
+        updated_at = now()
+    WHERE id = p_request_id;
+
+    INSERT INTO bookings (request_id, student_id, equipment_id, time_range)
+    VALUES (v_req.id, v_req.student_id, v_req.equipment_id, v_req.time_range)
+    RETURNING id INTO v_booking_id;
+
+    INSERT INTO audit_log (actor_id, action, table_name, record_id, old_data, new_data)
+    VALUES ((SELECT auth.uid()), 'request.approved', 'bookings', v_booking_id,
+            NULL,
+            jsonb_build_object('request_id', v_req.id, 'time_range', v_req.time_range));
+
+    RETURN jsonb_build_object('success', true, 'status', 'approved', 'booking_id', v_booking_id);
+
+  EXCEPTION WHEN SQLSTATE '23P01' THEN
+    -- Exclusion constraint violation (overlapping booking already confirmed)
+    UPDATE booking_requests
+    SET review_note = 'System: Slot conflicted with an existing approved booking. Check alternatives.',
+        updated_at = now()
+    WHERE id = p_request_id;
+
+    RETURN jsonb_build_object(
+      'success', false,
+      'error', 'slot_conflict',
+      'message', 'This slot was just booked by another approved request. Alternatives are available.'
+    );
+  END;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.cancel_booking_request(p_request_id UUID)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_req RECORD;
+BEGIN
+  SELECT * INTO v_req FROM booking_requests WHERE id = p_request_id FOR UPDATE;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Request not found';
+  END IF;
+
+  -- Only owner or admin may cancel
+  IF v_req.student_id <> (SELECT auth.uid()) AND public.get_my_role() <> 'admin' THEN
+    RAISE EXCEPTION 'Unauthorized to cancel this request';
+  END IF;
+
+  IF v_req.status = 'approved' THEN
+    DELETE FROM bookings WHERE request_id = p_request_id;
+  END IF;
+
+  UPDATE booking_requests
+  SET status = 'cancelled', updated_at = now()
+  WHERE id = p_request_id;
+
+  INSERT INTO audit_log (actor_id, action, table_name, record_id, old_data, new_data)
+  VALUES ((SELECT auth.uid()), 'request.cancelled', 'booking_requests', p_request_id,
+          jsonb_build_object('status', v_req.status),
+          jsonb_build_object('status', 'cancelled'));
+
+  RETURN jsonb_build_object('success', true, 'status', 'cancelled');
+END;
+$$;
+
+-- Security grant management: Revoke from anon, allow authenticated
+REVOKE EXECUTE ON FUNCTION public.review_booking_request FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.review_booking_request TO authenticated;
+
+REVOKE EXECUTE ON FUNCTION public.cancel_booking_request FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.cancel_booking_request TO authenticated;
+```
 
 ---
 
-## 5. Allocation Engine Specification
+## 5. Allocation & Conflict Resolution Engine
 
-> Location: `src/domain/allocation/`.  All functions are **pure** — they accept
-> data as arguments and return results with no side effects or I/O.
+> Location: `src/domain/allocation/`. Pure CPU functions, zero network/DB dependencies.
 
-### Input
-
+### Pure Domain Types
 ```typescript
-interface AllocationInput {
-  request: BookingRequest;              // the candidate request
-  equipment: Equipment;                 // target equipment with lab hours
-  accessRequirements: AccessRequirement[];
-  existingBookings: Booking[];          // confirmed bookings for this equipment
-  pendingRequests: BookingRequest[];     // other pending requests (for fairness)
-  studentHistory: Booking[];            // requester's past bookings (for fairness)
-  now: Date;                            // injected clock for testability
+export interface AllocationContext {
+  now: Date;                           // Injected clock for deterministic evaluation
+  maxHoursPerStudent: number;          // Default: 20 hours/month
+  weights: { urgency: 0.35; wait: 0.35; fairness: 0.30 };
+}
+
+export interface UserQualification {
+  qualificationType: 'training' | 'certification' | 'department_membership';
+  qualificationName: string;
+  expiresAt: Date | null;
 }
 ```
 
-### Step 1 — Hard Constraints (pass / fail)
+### Hard Constraints (Pass / Fail)
 
-Each constraint is a pure function `(input) => ConstraintResult` where
-`ConstraintResult = { pass: boolean; reason: string }`.
-
-| # | Constraint | Fails when |
+| # | Constraint | Evaluation Logic |
 |---|---|---|
-| H1 | `equipmentOperational` | `equipment.is_operational === false` |
-| H2 | `slotFree` | `time_range` overlaps any entry in `existingBookings` |
-| H3 | `accessEligible` | Student lacks a required training/certification/membership |
-| H4 | `withinLabHours` | Requested time falls outside `lab_open`–`lab_close` |
-| H5 | `fitsMaxDuration` | Duration exceeds `equipment.max_booking_hours` |
-| H6 | `feasibleBeforeDeadline` | Requested slot starts after `request.deadline` |
+| H1 | `equipmentOperational` | `equipment.is_operational === true` |
+| H2 | `slotFree` | Requested range has zero overlap with any confirmed booking in `existingBookings` |
+| H3 | `accessEligible` | For each required `access_requirements`, student has active matching `user_qualifications` |
+| H4 | `withinLabHours` | Time span is within equipment `lab_open` and `lab_close` in campus time |
+| H5 | `fitsMaxDuration` | Duration hours `<= equipment.max_booking_hours` |
+| H6 | `feasibleBeforeDeadline` | Requested slot start time `< request.deadline` |
 
-If **any** hard constraint fails, the request is **infeasible** for this slot.
-The engine skips scoring and proceeds directly to alternative-slot generation.
+### Weighted Soft Score Formula
 
-### Step 2 — Weighted Soft Score
+Score values are strictly in `[0, 1]`.
 
-All sub-scores are normalised to `[0, 1]`. Weights are defined in
-`src/lib/constants.ts` and sum to `1.0`.
-
-| Factor | Weight | Score formula |
-|---|---|---|
-| **Urgency** | 0.30 | `1 − clamp(daysUntilDeadline / 14, 0, 1)` — closer deadline → higher |
-| **Waiting time** | 0.25 | `clamp(daysSinceSubmission / 7, 0, 1)` — longer wait → higher |
-| **Past-usage fairness** | 0.25 | `1 − clamp(studentHoursThisMonth / maxHoursPerStudent, 0, 1)` — less past usage → higher |
-| **Equipment fit** | 0.20 | `1.0` if specs match request keywords exactly, `0.5` partial, `0.0` mismatch |
+| Factor | Weight | Exact Formula | Description |
+|---|---|---|---|
+| **Urgency** | 0.35 | `1 - Math.min(Math.max(daysUntilDeadline, 0), 14) / 14` | Approaching deadline increases urgency |
+| **Waiting Time** | 0.35 | `Math.min(Math.max(daysSinceSubmission, 0), 7) / 7` | Longer queue time prioritises request |
+| **Past Fairness** | 0.30 | `1 - Math.min(studentHoursThisMonth, 20) / 20` | Prioritises students with lower past usage |
 
 ```
-finalScore = Σ (weight_i × score_i)   // range [0, 1]
+finalScore = (0.35 * urgency) + (0.35 * waitTime) + (0.30 * pastFairness)
 ```
 
-### Step 3 — Explanation
+> **Equipment Fit:** Replaced arbitrary keyword matching with deterministic catalogue category filtering upfront. All requests entering scoring are 100% matched to equipment capabilities.
 
-`buildExplanation(scores, weights) → string`
-
-Produces a human-readable paragraph, e.g.:
-
-> "Score 0.74 — High urgency (deadline in 3 days, +0.27), moderate wait (submitted
-> 2 days ago, +0.18), low past usage this month (2 h, +0.21), good equipment fit
-> (+0.08). Recommended for approval."
-
-### Step 4 — Alternative Slots (when infeasible or low-scoring)
-
-`findAlternatives(equipment, existingBookings, constraints, windowDays = 7) → Slot[]`
-
-- Scans the next `windowDays` calendar days in `lab_open`–`lab_close` windows.
-- Divides each day into 1-hour candidate slots.
-- Filters each through the hard constraints.
-- Returns up to 5 slots sorted by proximity to the originally requested time.
-
-### Engine Orchestration
+### Multi-Request Conflict Ranking: `rankCompetingRequests`
+When multiple pending requests compete for overlapping slots on the same equipment:
 
 ```typescript
-function evaluateRequest(input: AllocationInput): AllocationResult {
-  const hardResults = runHardConstraints(input);
-  if (hardResults.some(r => !r.pass)) {
-    return {
-      feasible: false,
-      failedConstraints: hardResults.filter(r => !r.pass),
-      alternatives: findAlternatives(...),
-    };
-  }
-  const { score, breakdown } = computeScore(input);
-  return {
-    feasible: true,
-    score,
-    breakdown,
-    explanation: buildExplanation(breakdown),
-    alternatives: score < 0.3 ? findAlternatives(...) : [],
-  };
+export function rankCompetingRequests(
+  requests: BookingRequest[],
+  equipment: Equipment,
+  qualificationsByStudent: Map<string, UserQualification[]>,
+  existingBookings: Booking[],
+  studentHoursMap: Map<string, number>,
+  ctx: AllocationContext
+): {
+  winner: ScoredRequest | null;
+  rankedQueue: ScoredRequest[];
+  fallbacksWithAlternatives: ScoredRequest[];
 }
 ```
+
+1. **Recompute View-Time Scores:** The stored `allocation_score` is only an initial snapshot; scores are re-evaluated dynamically using `ctx.now`.
+2. **Filter Feasible:** Verify all 6 hard constraints against confirmed bookings.
+3. **Sort by Deterministic Ranking:**
+   - Primary: `finalScore` descending
+   - Secondary (tie-breaker 1): Earlier submission timestamp (`created_at` ascending)
+   - Tertiary (tie-breaker 2): Lexicographic UUID string comparison (`id` ascending)
+4. **Select Winner:** Top-ranked candidate is designated `winner`.
+5. **Generate Alternative Slots for Fallbacks:** Run `findAlternatives()` for each losing request to present immediate one-click reschedule options.
+6. **Explanation Output:** Exposes explicit "claimed deadline" (or "faculty-verified deadline"), days in queue, and monthly usage count.
 
 ---
 
-## 6. Gemini Usage
+## 6. Gemini Integration Architecture
 
-### Architecture
-
-```
-User types free-text request
-  → Client component sends text via Server Action
-  → Server Action calls Gemini API (server-only, using GEMINI_API_KEY)
-  → Response validated against Zod schema
-  → Parsed fields returned to client
-  → User reviews, edits, and confirms in a structured form
-  → Confirmed data submitted as a normal booking request
-```
-
-### Prompt Design
+### Secure Server-Only Extraction
+- **Package:** Official Google GenAI SDK (`@google/genai`).
+- **Enforcement:** Placed in `src/lib/gemini.server.ts` with `import 'server-only'`. It is structurally impossible for client bundles to import the AI client or leak `GEMINI_API_KEY`.
+- **Untrusted Output Policy:** AI output is strictly a client prefill suggestion. The user must review and edit all fields. Direct persistence of raw AI output is impossible because client submission calls Server Actions with standard Zod schema validation.
 
 ```typescript
-// src/domain/gemini/prompt.ts
-const SYSTEM_PROMPT = `You are a lab booking assistant. Extract structured booking
-details from a student's natural-language request. Return ONLY valid JSON matching
-this schema — no markdown, no explanation:
+// src/lib/gemini.server.ts
+import 'server-only';
+import { GoogleGenAI, Type } from '@google/genai';
 
-{
-  "equipment_name": string,
-  "preferred_date": "YYYY-MM-DD",
-  "preferred_start_time": "HH:MM",
-  "preferred_end_time": "HH:MM",
-  "project_title": string,
-  "project_description": string,
-  "deadline": "YYYY-MM-DD",
-  "special_requirements": string | null
-}
+const ai = new GoogleGenAI({});
 
-If a field cannot be determined, set it to null.`;
-```
+export async function parseBookingPrompt(userPrompt: string, currentDate: string, timezone: string) {
+  const response = await ai.models.generateContent({
+    model: 'gemini-2.5-flash',
+    contents: userPrompt,
+    config: {
+      systemInstruction: `You are a campus lab booking assistant. Extract booking parameters relative to today's date (${currentDate}) in campus timezone (${timezone}). Return JSON matching the schema. If unclear, set to null.`,
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          equipment_name: { type: Type.STRING },
+          preferred_date: { type: Type.STRING, description: 'YYYY-MM-DD' },
+          preferred_start_time: { type: Type.STRING, description: 'HH:MM' },
+          preferred_end_time: { type: Type.STRING, description: 'HH:MM' },
+          project_title: { type: Type.STRING },
+          project_description: { type: Type.STRING },
+          deadline: { type: Type.STRING, description: 'YYYY-MM-DD' },
+        },
+      },
+    },
+  });
 
-### Validation (Zod)
-
-```typescript
-// src/domain/gemini/parse.ts
-import { z } from 'zod';
-
-export const GeminiBookingSchema = z.object({
-  equipment_name:       z.string().nullable(),
-  preferred_date:       z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable(),
-  preferred_start_time: z.string().regex(/^\d{2}:\d{2}$/).nullable(),
-  preferred_end_time:   z.string().regex(/^\d{2}:\d{2}$/).nullable(),
-  project_title:        z.string().nullable(),
-  project_description:  z.string().nullable(),
-  deadline:             z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable(),
-  special_requirements: z.string().nullable(),
-});
-
-export function parseGeminiResponse(raw: string): ParseResult {
-  const json = JSON.parse(raw);           // may throw
-  return GeminiBookingSchema.safeParse(json);  // { success, data?, error? }
+  return response.text;
 }
 ```
 
-### Graceful Degradation
-
-| Scenario | Behaviour |
-|---|---|
-| Gemini returns valid JSON | Pre-fill form fields; user edits and confirms |
-| Gemini returns invalid JSON | Log warning; show empty form with message "AI couldn't parse your request — please fill in the details manually" |
-| Gemini API timeout / rate limit | Catch error; show empty form with same manual-entry message |
-| Gemini API key missing | AI button hidden; only the manual form is rendered |
-| `GEMINI_API_KEY` env var unset | `lib/gemini.ts` exports `null`; action skips AI call |
-
-**The structured booking form is always the primary UI.** The AI parse is a
-convenience layer on top; the form is fully functional without it.
+### Server-Side Validation, ID Resolution & Rate Limiting
+1. **User Authentication Check:** `(SELECT auth.uid())` is required before invoking the Gemini action.
+2. **Per-User Rate Limiting:** Enforces maximum 5 AI requests per minute per user.
+3. **Length Bounding (Zod):**
+   ```typescript
+   export const GeminiBookingSchema = z.object({
+     equipment_name: z.string().max(100).nullable(),
+     preferred_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable(),
+     preferred_start_time: z.string().regex(/^\d{2}:\d{2}$/).nullable(),
+     preferred_end_time: z.string().regex(/^\d{2}:\d{2}$/).nullable(),
+     project_title: z.string().max(150).nullable(),
+     project_description: z.string().max(2000).nullable(),
+     deadline: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable(),
+   });
+   ```
+4. **Catalogue Matching:** Server action matches extracted `equipment_name` against real equipment records in Supabase using exact and trigram matching, mapping it to a verified `equipment_id` UUID.
+5. **Fallback Guarantee:** If Gemini fails, times out (5s abort controller), or returns non-conforming JSON, the system presents the standard manual booking form with zero disruption.
 
 ---
 
 ## 7. Secrets & Environment Variables
 
-### `.env.local` (never committed — listed in `.gitignore`)
-
-```
-# Supabase
-NEXT_PUBLIC_SUPABASE_URL=https://xxxx.supabase.co
-NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGci...          # safe for client (RLS enforced)
-SUPABASE_SERVICE_ROLE_KEY=eyJhbGci...               # ⚠ SERVER-ONLY — bypasses RLS
-
-# Gemini
-GEMINI_API_KEY=AIza...                              # ⚠ SERVER-ONLY
-
-# App
-NEXT_PUBLIC_CAMPUS_TIMEZONE=Asia/Kolkata            # safe for client
-TZ=UTC                                              # Node.js runtime timezone
-```
-
-### Enforcement Rules
-
-| Variable prefix | Where it's readable | Enforcement |
+### Environment Variables
+| Variable | Scope | Description |
 |---|---|---|
-| `NEXT_PUBLIC_*` | Client + Server | Next.js built-in: only `NEXT_PUBLIC_` vars are bundled into client JS |
-| No prefix | Server only | Never appears in client bundle; accessed only in Server Actions, Route Handlers, `server.ts` |
-
-- `SUPABASE_SERVICE_ROLE_KEY` is used **only** in server actions that need to
-  bypass RLS (role changes, booking confirmations, audit writes).
-- `GEMINI_API_KEY` is used **only** in `src/lib/gemini.ts`, which is imported
-  **only** by server actions.
-- `.env.example` in the repo contains variable **names** with placeholder values.
+| `NEXT_PUBLIC_SUPABASE_URL` | Public (Client & Server) | Supabase project URL |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Public (Client & Server) | Supabase anonymous public key (enforces RLS) |
+| `NEXT_PUBLIC_CAMPUS_TIMEZONE` | Public (Client & Server) | Campus timezone identifier (e.g. `Asia/Kolkata`) |
+| `GEMINI_API_KEY` | Server-Only (`import 'server-only'`) | Google Gemini API Key |
+| `TZ` | Server-Only | Node.js runtime timezone (`UTC`) |
+| `SUPABASE_SERVICE_ROLE_KEY` | **Local Seed Only** | Strictly for `src/seed/seed.ts`. Never deployed to Vercel. |
 
 ---
 
-## 8. Runtime Dependencies
+## 8. Runtime & Development Dependencies
 
-| Package | Justification |
-|---|---|
-| `next` | App Router framework, SSR, Server Actions, API routes |
-| `react`, `react-dom` | UI rendering (peer deps of Next.js) |
-| `typescript` | Strict type checking (devDep) |
-| `@supabase/supabase-js` | Supabase client for Postgres queries and Auth |
-| `@supabase/ssr` | Cookie-based Supabase auth for server components and middleware |
-| `@google/generative-ai` | Official Gemini API SDK (server-only, tree-shaken) |
-| `zod` | Runtime schema validation for Gemini output and form inputs |
-| `tailwindcss` | Utility-first CSS; no runtime JS, purged in production (devDep) |
-| `eslint`, `eslint-config-next` | Linting including a11y rules (devDep) |
+### Complete Dependency Manifest
 
-**Not included (and why):**
+```json
+{
+  "dependencies": {
+    "next": "^16.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "@supabase/supabase-js": "^2.48.0",
+    "@supabase/ssr": "^0.5.2",
+    "@google/genai": "^0.1.2",
+    "zod": "^3.24.1",
+    "clsx": "^2.1.1",
+    "tailwind-merge": "^3.0.1",
+    "server-only": "^0.0.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3",
+    "@types/node": "^22.13.0",
+    "@types/react": "^19.0.8",
+    "@types/react-dom": "^19.0.3",
+    "tailwindcss": "^4.0.0",
+    "@tailwindcss/postcss": "^4.0.0",
+    "postcss": "^8.5.1",
+    "eslint": "^9.19.0",
+    "eslint-config-next": "^16.0.0",
+    "eslint-plugin-jsx-a11y": "^6.10.2",
+    "vitest": "^3.0.4"
+  }
+}
+```
 
-| Omitted | Reason |
-|---|---|
-| `date-fns` / `dayjs` / `moment` | `Intl.DateTimeFormat` + `Temporal` (or simple UTC math) covers all needs |
-| `axios` | `fetch` is built into Next.js with caching |
-| `prisma` / `drizzle` | Supabase JS client is sufficient; avoids ORM overhead |
-| `next-auth` | Supabase Auth handles everything including RLS integration |
-| `shadcn/ui` or component library | Custom accessible primitives keep the bundle lean |
-| `@tanstack/react-query` | Server Components + Server Actions eliminate most client fetching |
+### Dependency Justification
+- `next`, `react`, `react-dom`: Modern React Server Components, Server Actions, App Router.
+- `@supabase/supabase-js`, `@supabase/ssr`: Postgres connection, authentication, cookie-based session handling.
+- `@google/genai`: Current official Google GenAI SDK for Gemini 2.5 Flash.
+- `zod`: Strict runtime schema validation for forms and AI responses.
+- `clsx`, `tailwind-merge`: Lean dynamic styling utilities (`cn()`).
+- `server-only`: Build-time guard guaranteeing server secrets never leak into client bundles.
+- `vitest`: Fast zero-config test runner for domain pure functions and scenarios.
 
 ---
 
-## 9. Test Plan
+## 9. Test Plan & Automated Verification
 
-### Mapping to Evaluation Criteria
+### CI/CD Isolation Policy
+- **Automated CI (GitHub Actions):** Executes `tsc --noEmit`, ESLint (`eslint-plugin-jsx-a11y`), and Vitest pure domain unit tests only. Zero secrets or database credentials are required in CI.
+- **Manual Integration Runs:** Database, RLS, and concurrency tests execute manually against a separate, free-tier Supabase staging project.
 
-| Criterion | Test type | What is tested |
-|---|---|---|
-| **Code quality** | Static analysis | `tsc --noEmit` strict mode; ESLint with `eslint-config-next` |
-| **Security** | Unit + integration | RLS policy tests via Supabase client impersonation; role escalation attempts; env var leak check in client bundle |
-| **Efficiency** | Unit | Allocation engine benchmarks on large input sets; bundle size check (`next build` output < 200 KB first-load JS) |
-| **Testing** | All | Coverage target ≥ 80% on `domain/`; integration tests for critical paths |
-| **Accessibility** | Automated + manual | `eslint-plugin-jsx-a11y`; Axe-core integration test on key pages |
-| **Problem alignment** | E2E | Full booking lifecycle scenario test |
+### 1. Pure Unit Tests (`src/domain/`)
+- `constraints.test.ts`: Validates all 6 hard constraints individually and in combination.
+- `scoring.test.ts`: Validates mathematical boundaries of urgency, wait time, and fairness formulas.
+- `ranking.test.ts`: Verifies tie-breaking logic (score → submission time → UUID string order).
+- `gemini/parse.test.ts`: Tests Zod bounds, invalid date rejections, and string stripping.
 
-### Test Suites
+### 2. Scenario Test (`test/scenario/booking-lifecycle.test.ts`)
+Vitest end-to-end flow test (mocking data client):
+1. Ingests natural language prompt.
+2. Formats untrusted prefill; validates with Zod.
+3. Evaluates competing requests through `rankCompetingRequests`.
+4. Asserts winner selection, explanation generation, and alternative slot calculation for fallbacks.
 
-#### 1. Domain Unit Tests (`domain/`)
+### 3. Database Exclusion & Concurrency Test (`test/integration/concurrency.test.ts`)
+Run against staging Supabase instance:
+```typescript
+test('concurrent approval of overlapping slots triggers SQLSTATE 23P01', async () => {
+  const reqA = await createTestBookingRequest(slot1);
+  const reqB = await createTestBookingRequest(slot1_overlapping);
 
-```
-allocation/constraints.test.ts
-  ✓ rejects non-operational equipment
-  ✓ rejects overlapping slot
-  ✓ rejects ineligible student
-  ✓ rejects outside lab hours
-  ✓ rejects exceeding max duration
-  ✓ rejects past-deadline request
+  // Trigger parallel approvals via authenticated faculty sessions
+  const [resA, resB] = await Promise.all([
+    facultyClientA.rpc('review_booking_request', { p_request_id: reqA.id, p_action: 'approved' }),
+    facultyClientB.rpc('review_booking_request', { p_request_id: reqB.id, p_action: 'approved' }),
+  ]);
 
-allocation/scoring.test.ts
-  ✓ urgency score increases as deadline approaches
-  ✓ waiting-time score increases with days since submission
-  ✓ fairness score penalises heavy past users
-  ✓ final score is weighted sum in [0, 1]
+  const outcomes = [resA.data.success, resB.data.success];
+  expect(outcomes).toContain(true);
+  expect(outcomes).toContain(false);
 
-allocation/engine.test.ts
-  ✓ feasible request returns score + explanation
-  ✓ infeasible request returns failed constraints + alternatives
-  ✓ alternatives are within lab hours and non-overlapping
-
-gemini/parse.test.ts
-  ✓ valid JSON passes Zod schema
-  ✓ missing fields parsed as null
-  ✓ malformed JSON returns safeParse failure
-  ✓ extra fields are stripped
-
-booking/validate.test.ts
-  ✓ rejects end before start
-  ✓ rejects past dates
-  ✓ rejects zero-length range
-```
-
-#### 2. Data Integration Tests (`data/`)
-
-```
-booking.repo.test.ts
-  ✓ creating overlapping bookings throws exclusion-constraint error
-  ✓ non-overlapping bookings succeed
-  ✓ pending requests do not block new bookings
-```
-
-#### 3. Concurrency / Double-Booking Test ⚠️
-
-```
-booking.concurrent.test.ts
-  ✓ Two simultaneous approve actions for the same slot:
-    - Launch two parallel transactions that each attempt to INSERT
-      into bookings with the same equipment_id and overlapping time_range
-    - Assert: exactly ONE succeeds, the other receives a constraint violation
-    - Assert: the failed action returns alternative slots
-    - Assert: bookings table contains exactly one row for that slot
-```
-
-**Implementation:** Use `Promise.all` with two Supabase service-role clients
-executing the approve flow concurrently against a test database.
-
-#### 4. RLS Policy Tests
-
-```
-rls.test.ts
-  ✓ student cannot read another student's booking requests
-  ✓ student cannot update their own role
-  ✓ faculty cannot approve requests outside their department
-  ✓ anon user can read equipment but not booking_requests
-  ✓ admin can read audit_log; student and faculty cannot
-```
-
-#### 5. Accessibility Tests
-
-```
-a11y.test.ts
-  ✓ Landing page passes Axe-core (zero violations)
-  ✓ Booking form has associated labels for every input
-  ✓ All interactive elements are keyboard-reachable (Tab order)
-  ✓ Focus is trapped inside modal dialogs
-  ✓ Error messages are linked via aria-describedby
-```
-
-#### 6. E2E Scenario Test
-
-```
-booking-lifecycle.e2e.ts
-  1. Student signs up → profile created with role 'student'
-  2. Student browses equipment catalogue
-  3. Student types natural-language request → AI parses (or fallback)
-  4. Student reviews, edits, submits booking request
-  5. Faculty signs in → sees request in dashboard
-  6. Allocation engine scores request → explanation shown
-  7. Faculty approves → booking confirmed
-  8. Student sees confirmed booking in "My Bookings"
-  9. Audit log contains all actions
+  // Exactly one booking in table
+  const { data: bookings } = await anonClient.from('bookings').select('*');
+  expect(bookings).toHaveLength(1);
+});
 ```
 
 ---
 
-## 10. Accessibility Plan
+## 10. Accessibility (a11y) Architecture
 
-### Standards
-
-Target **WCAG 2.1 Level AA** compliance.
-
-### Implementation Checklist
-
-| Area | Approach |
-|---|---|
-| **Labels** | Every `<input>`, `<select>`, `<textarea>` has an explicit `<label htmlFor>`. Visually-hidden labels where design requires icon-only inputs. |
-| **Keyboard navigation** | All interactive elements reachable via Tab. Logical tab order follows visual layout. No keyboard traps. `Escape` closes modals and dropdowns. |
-| **Focus management** | Visible focus ring on all interactive elements (`:focus-visible` with high-contrast outline). Focus moved programmatically to relevant content after route changes and modal opens. |
-| **Skip link** | "Skip to main content" link as first focusable element in layout. |
-| **Contrast** | Text contrast ≥ 4.5:1 (normal), ≥ 3:1 (large). UI controls ≥ 3:1 against background. Verified with Tailwind's colour palette. |
-| **Not colour-only** | Status indicators use **icon + text + colour** (e.g., ✓ Approved / ✗ Rejected / ⏳ Pending). Charts use patterns in addition to colours. |
-| **Error handling** | Inline error messages linked to fields via `aria-describedby`. Error summary at top of form with links to offending fields. Live region (`aria-live="polite"`) for async status updates. |
-| **Images** | All `<img>` tags have descriptive `alt` text. Decorative images use `alt=""` and `aria-hidden="true"`. |
-| **Semantic HTML** | `<nav>`, `<main>`, `<header>`, `<footer>`, `<section>` with `aria-label` where multiple landmarks exist. Headings form a logical `h1` → `h2` → `h3` hierarchy per page. |
-| **Tables** | Booking schedules use `<table>` with `<caption>`, `<thead>`, `scope` attributes. |
-| **Motion** | Respect `prefers-reduced-motion`. Disable animations when set. |
-| **Testing** | `eslint-plugin-jsx-a11y` in CI. Axe-core automated checks. Manual keyboard-only walkthrough before submission. |
+Compliant with **WCAG 2.1 Level AA**:
+1. **Forms & Labels:** Every input has a linked `<label htmlFor="id">`. Helper and error messages link via `aria-describedby`.
+2. **Keyboard Trapping & Esc:** Modals and dialogs trap keyboard focus and dismiss on `Escape`.
+3. **Contrast:** Text contrast strictly exceeds 4.5:1; interactive borders exceed 3:1.
+4. **Non-Colour Status:**
+   - Approved: Green badge + Checkmark icon (`✓`) + "Approved" text
+   - Rejected: Red badge + Cross icon (`✕`) + "Rejected" text
+   - Pending: Amber badge + Clock icon (`⏳`) + "Pending" text
+5. **Screen Readers & Focus:** Live announcements for AI extraction status via `<div role="status" aria-live="polite">`. Skip navigation link rendered as the first focusable element.
 
 ---
 
-## 11. Seed Data
+## 11. Seed Data Specifications
 
-> All seed data is in `src/seed/data.ts`, clearly prefixed with `[DEMO]` or
-> marked with `is_seed: true` metadata. The seed script (`src/seed/seed.ts`)
-> uses the `SUPABASE_SERVICE_ROLE_KEY` and is **never** run in production.
+> Relative dates generated via `now() + INTERVAL '...'` to ensure seed data never goes stale.
+> Demo accounts are student and faculty only. **No public admin account.**
 
-### Departments (3)
+### 1. Departments (3)
+1. **Physics:** Science Block A, Floor 2 (`physics@campus.edu`)
+2. **Chemistry:** Science Block B, Floor 1 (`chemistry@campus.edu`)
+3. **Biomedical Engineering:** Engineering Block C, Floor 3 (`bme@campus.edu`)
 
-| Name | Building | Floor |
-|---|---|---|
-| Physics | Science Block A | 2 |
-| Chemistry | Science Block B | 1 |
-| Biomedical Engineering | Engineering Block C | 3 |
+### 2. Equipment Catalogue (12 items)
+- **Physics:** X-Ray Diffractometer, Optical Spectrometer, Cryostat System, Laser Interferometer
+- **Chemistry:** Gas Chromatograph, 400 MHz NMR Spectrometer, Rotary Evaporator, High-Temp Tube Furnace
+- **Biomedical Eng.:** 3D Bioprinter, Flow Cytometer, Real-Time PCR System, Confocal Laser Microscope
 
-### Equipment (12)
-
-| # | Name | Department | Category |
-|---|---|---|---|
-| 1 | X-Ray Diffractometer | Physics | Crystallography |
-| 2 | Optical Spectrometer | Physics | Spectroscopy |
-| 3 | Cryostat System | Physics | Low Temperature |
-| 4 | Laser Interferometer | Physics | Optics |
-| 5 | Gas Chromatograph | Chemistry | Analytical |
-| 6 | NMR Spectrometer | Chemistry | Spectroscopy |
-| 7 | Rotary Evaporator | Chemistry | Synthesis |
-| 8 | Fume Hood Station | Chemistry | Safety |
-| 9 | 3D Bioprinter | Biomedical Eng. | Fabrication |
-| 10 | Flow Cytometer | Biomedical Eng. | Cell Analysis |
-| 11 | PCR Thermal Cycler | Biomedical Eng. | Molecular Biology |
-| 12 | Confocal Microscope | Biomedical Eng. | Imaging |
-
-Each equipment entry includes realistic `specifications` JSON, `lab_open`/`lab_close`
-times, `max_booking_hours`, and associated `access_requirements`.
-
-### Synthetic Users
-
+### 3. Synthetic Demo Users (Documented in README)
 | Email | Name | Role | Department |
 |---|---|---|---|
-| `admin@lablink.demo` | Demo Admin | admin | Physics |
 | `faculty.physics@lablink.demo` | Dr. Priya Sharma | faculty | Physics |
 | `faculty.chem@lablink.demo` | Dr. Ravi Kumar | faculty | Chemistry |
 | `faculty.bme@lablink.demo` | Dr. Anita Desai | faculty | Biomedical Eng. |
 | `student1@lablink.demo` | Arjun Patel | student | Physics |
-| `student2@lablink.demo` | Meera Nair | student | Chemistry |
-| `student3@lablink.demo` | Karthik Rao | student | Biomedical Eng. |
-| `student4@lablink.demo` | Zara Khan | student | Physics |
+| `student2@lablink.demo` | Meera Nair | student | Physics |
+| `student3@lablink.demo` | Karthik Rao | student | Chemistry |
+| `student4@lablink.demo` | Zara Khan | student | Biomedical Eng. |
 
-All demo users use the password `LabLink-Demo-2024!` (documented in seed script,
-not in production env).
-
-### Pre-Seeded Booking Requests
-
-- 3 approved bookings (one per department) with confirmed `bookings` rows
-- 2 pending requests (to demonstrate the approval flow and allocation scoring)
-- 1 rejected request (to show the rejected state with review notes)
+*Password for all demo accounts:* `DemoPass!2026`
 
 ---
 
-## 12. The 90-Second Pitch Flow
-
-> This is the demo scenario the app must support end-to-end, timed to run in
-> ≤ 90 seconds with pre-seeded data.
+## 12. The 90-Second Pitch Demo Flow
 
 ```
  0:00  LANDING PAGE
-       → Show the public equipment catalogue.
-       → "Any student on campus can discover specialised equipment across
-          every department."
+       → Public equipment catalogue: search "diffractometer", inspect specs and requirements.
 
- 0:15  STUDENT SIGNS IN  (pre-seeded student1@lablink.demo)
-       → Dashboard shows their bookings and requests.
+ 0:15  NATURAL LANGUAGE BOOKING (Student 1: Arjun Patel)
+       → Types: "Need X-Ray Diffractometer next Tuesday 14:00 to 17:00 for thin-film analysis, deadline in 2 days"
+       → Server-side Gemini formats untrusted prefill; Arjun verifies and clicks Submit.
 
- 0:20  NATURAL-LANGUAGE BOOKING
-       → Student types: "I need the X-Ray Diffractometer next Tuesday 2-5pm
-         for my crystal structure project, deadline is Dec 15"
-       → Gemini parses → structured form pre-filled.
-       → Student reviews, tweaks end-time, confirms.
+ 0:35  THE CONFLICT: TWO STUDENTS, ONE SLOT
+       → Student 2 (Meera Nair) has already requested the exact same Tuesday 14:00-17:00 slot.
+       → Show Competing Queue view: both requests are pending for the same equipment.
 
- 0:40  ALLOCATION ENGINE SCORES
-       → Show the score breakdown and explanation:
-         "Score 0.82 — High urgency (deadline in 22 days), first-time user
-          this month, good equipment fit."
+ 0:50  ALLOCATION ENGINE TRANSPARENCY
+       → Faculty (Dr. Priya Sharma) opens Department Review Dashboard.
+       → The pure domain engine ranks both requests at view-time:
+         * Student 1 (Arjun):
+           - Claimed Deadline: 2 days away -> Urgency Score = 1 - 2/14 = 0.857
+           - Wait Time: Submitted 3 days ago -> Wait Score = 3/7 = 0.429
+           - Past Usage: 2 hours this month -> Fairness Score = 1 - 2/20 = 0.900
+           - Weighted Score = (0.35 * 0.857) + (0.35 * 0.429) + (0.30 * 0.900)
+                            = 0.300 + 0.150 + 0.270 = 0.720 (72.0%)
+         * Student 2 (Meera):
+           - Claimed Deadline: 10 days away -> Urgency Score = 1 - 10/14 = 0.286
+           - Wait Time: Submitted 1 day ago -> Wait Score = 1/7 = 0.143
+           - Past Usage: 12 hours this month -> Fairness Score = 1 - 12/20 = 0.400
+           - Weighted Score = (0.35 * 0.286) + (0.35 * 0.143) + (0.30 * 0.400)
+                            = 0.100 + 0.050 + 0.120 = 0.270 (27.0%)
+       → System displays mathematical explanation ranking Arjun #1 (Score 0.72) over Meera #2 (Score 0.27).
 
- 0:50  FACULTY SIGNS IN  (pre-seeded faculty.physics@lablink.demo)
-       → Department dashboard shows pending requests with scores.
-       → Faculty sees allocation recommendation.
+ 1:05  ATOMIC APPROVAL & DOUBLE-BOOKING PREVENTION
+       → Faculty clicks "Approve Winner" for Arjun.
+       → Single transaction sets status to approved and commits to bookings table.
+       → Demonstrates exclusion safety: Any concurrent attempt to confirm Meera's request
+         in that window triggers Postgres exclusion violation (SQLSTATE 23P01).
 
- 1:00  FACULTY APPROVES
-       → Booking confirmed. Student's calendar updated.
-       → Demonstrate: attempting a conflicting booking → exclusion constraint
-         blocks it → system suggests alternative slots.
+ 1:15  AUTOMATED CONFLICT RESOLUTION
+       → System automatically provides Meera with 3 pre-calculated alternative feasible slots
+         (e.g., Wednesday 10:00-13:00) with one-click rescheduling.
 
- 1:15  CONFLICT RESOLUTION
-       → Show alternative-slot suggestions with scores.
-       → "The system fairly balances deadlines, wait times, and past usage
-          across all students."
-
- 1:25  WRAP-UP
-       → Show audit log (admin view).
-       → Mention: RLS, accessibility, TypeScript strict, free-tier stack.
-       → "LabLink makes specialised equipment accessible to every student,
-          fairly and transparently."
-
- 1:30  END
+ 1:25  SUMMARY & IMPACT
+       → Zero secrets in client, zero cost (100% free tier), Postgres-guaranteed booking safety.
 ```
 
 ---
 
-## Risks & What to Cut First
+## 13. Risks, Limits & Cut List
 
-### Risks
-
-| Risk | Likelihood | Impact | Mitigation |
-|---|---|---|---|
-| Gemini free-tier rate limit (15 RPM) | High | Low | AI is optional; manual form always works. Cache recent parses. |
-| Supabase free-tier limits (500 MB, 50K MAU) | Low | Medium | Seed data is small; hackathon demo won't hit limits. |
-| Vercel Hobby serverless timeout (10s) | Medium | Medium | Allocation engine is pure CPU (< 50ms); Gemini call has 5s timeout with fallback. |
-| `btree_gist` not available | Very Low | High | Supabase supports it; verified in docs. Fallback: application-level locking (worse). |
-| Time pressure | High | High | Cut list below. |
-
-### Cut List (in order — cut from bottom up)
-
-| Priority | Feature | Why it's safe to cut |
+### Production & Free-Tier Limits
+| Service | Free Tier Boundary | Operational Mitigation |
 |---|---|---|
-| Cut last | Exclusion constraint + booking flow | Core differentiator; must ship |
-| Cut last | Equipment catalogue + RLS | Core requirement; must ship |
-| Cut 5th | Audit log | Nice-to-have; add if time allows |
-| Cut 4th | Equipment-fit sub-score in allocation | Simplify to 3-factor scoring |
-| Cut 3rd | Alternative-slot suggestions | Return "slot unavailable" without suggestions |
-| Cut 2nd | Natural-language Gemini parsing | Manual form is the primary UI anyway |
-| Cut 1st | Admin user-management UI | Manage roles via Supabase dashboard |
+| **Supabase Project Pausing** | Inactive projects pause after 7 days | Documented in README: ping project before demo run. |
+| **Gemini API Rate Limits** | 15 RPM (verify in current Google AI documentation) | Strict 5 req/min per-user rate limit; form is 100% functional without AI. |
+| **Vercel Hobby Serverless** | 10s execution limit (verify in current Vercel documentation) | AI request has a 5s client abort; all database operations execute in `< 100ms`. |
+| **Storage / DB Size** | 500 MB Postgres limit | Text records and bounded logs consume `< 5 MB`. |
+
+### Ordered Cut List (If time runs short during hackathon)
+1. **Cut 1st:** Gemini natural language prefill (fall back directly to manual booking form).
+2. **Cut 2nd:** Dynamic alternative slot finder (simply notify user that the requested slot is busy).
+3. **Cut 3rd:** Faculty verification flag (`deadline_verified`).
+4. **Cut 4th:** Audit log viewer page.
+5. **NEVER CUT:** `btree_gist` exclusion constraint, RLS policies, atomic review RPC, and catalogue discovery.
+
+---
+
+## 14. Architecture Change Log
+
+| Item # | Area | Section Touched | Summary of Specific Change |
+|---|---|---|---|
+| 1 | Security | § 2, § 4 | Forced `status='pending'` and null values on `booking_requests` INSERT; revoked direct student UPDATE. |
+| 2 | Security | § 2, § 4 | Profiles restricted to authenticated SELECT; updates limited strictly to `full_name` via DB trigger. |
+| 3 | Security | § 11 | Removed `admin@lablink.demo` and public admin passwords. Demo accounts are student and faculty only. |
+| 4 | Security | § 1, § 4 | Removed webhook route; implemented DB trigger `handle_new_user()` on `auth.users` forcing `role='student'`. |
+| 5 | Security | § 4 | Created `review_booking_request` and `cancel_booking_request` as `SECURITY DEFINER` RPCs handling SQLSTATE `23P01`. Service-role key removed from deployed app. |
+| 6 | Security | § 2, § 4 | Added `chk_bounded_request_range` and `chk_bounded_booking_range`. Revoked UPDATE/DELETE on `audit_log`. Adopted `(SELECT auth.uid())` pattern. Dropped `ip_address`. |
+| 7 | Functionality | § 1, § 5 | Implemented pure domain `rankCompetingRequests` with dynamic view-time scoring and deterministic tie-breaking. |
+| 8 | Functionality | § 2, § 5 | Created `user_qualifications` table enabling verification of hard constraint H3 (`accessEligible`). |
+| 9 | Functionality | § 4 | Implemented `get_equipment_busy_ranges` RPC returning anonymised time ranges. Blocked students reading other bookings. |
+| 10 | Functionality | § 2, § 5 | Added `deadline_verified`, max 3 pending requests per student cap, "claimed deadline" explanations, and deterministic spec filtering. |
+| 11 | Functionality | § 1, § 6 | Gemini prompt injects current date and campus timezone; JSON mode with Zod bounds; server-side ID matching; rate-limited. |
+| 12 | Functionality | § 6, § 8 | Replaced deprecated `@google/generative-ai` with official `@google/genai` SDK using `gemini-2.5-flash`. |
+| 13 | Pitch Flow | § 12 | Rewrote 90-second pitch with 2 competing requests for the same slot, showing exact mathematical score breakdowns. |
+| 14 | Structure | § 1, § 6 | Added `src/queries/` layer for Server Component reads; isolated Gemini client with `import 'server-only'`. |
+| 15 | Dependencies/Tests| § 8, § 9 | Complete dependency manifest; Vitest scenario test replaces Playwright; removed Temporal mention; pure CI tests. |
+| 16 | Risks/Dates | § 11, § 13 | Seed data uses relative intervals; documented Supabase 7-day inactivity pause; marked 15 RPM and 10s limits as "verify in docs". |
